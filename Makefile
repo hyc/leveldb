@@ -52,7 +52,7 @@ TESTS = \
 	write_batch_test
 
 PROGRAMS = db_bench $(TESTS)
-BENCHMARKS = db_bench_sqlite3 db_bench_tree_db
+BENCHMARKS = db_bench db_bench_sqlite3 db_bench_tree_db db_bench_mdb db_bench_bdb
 
 LIBRARY = libleveldb.a
 MEMENVLIBRARY = libmemenv.a
@@ -99,14 +99,41 @@ $(LIBRARY): $(LIBOBJECTS)
 	rm -f $@
 	$(AR) -rs $@ $(LIBOBJECTS)
 
+bench: $(BENCHMARKS)
+
+clean-bench:
+	rm -f doc/bench/*.o $(BENCHMARKS)
+
 db_bench: db/db_bench.o $(LIBOBJECTS) $(TESTUTIL)
 	$(CXX) db/db_bench.o $(LIBOBJECTS) $(TESTUTIL) -o $@  $(LDFLAGS)
 
-db_bench_sqlite3: doc/bench/db_bench_sqlite3.o $(LIBOBJECTS) $(TESTUTIL)
-	$(CXX) doc/bench/db_bench_sqlite3.o $(LIBOBJECTS) $(TESTUTIL) -o $@ $(LDFLAGS) -lsqlite3
+db_bench_sqlite3: doc/bench/db_bench_sqlite3.o $(LIBRARY) $(TESTUTIL)
+	$(CXX) doc/bench/db_bench_sqlite3.o $(LIBRARY) $(TESTUTIL) -o $@ $(LDFLAGS) /usr/local/lib/libsqlite3.a -ldl
 
-db_bench_tree_db: doc/bench/db_bench_tree_db.o $(LIBOBJECTS) $(TESTUTIL)
-	$(CXX) doc/bench/db_bench_tree_db.o $(LIBOBJECTS) $(TESTUTIL) -o $@ $(LDFLAGS) -lkyotocabinet
+db_bench_sqlo: doc/bench/db_bench_sqlo.o $(LIBRARY) $(TESTUTIL)
+	$(CXX) doc/bench/db_bench_sqlo.o $(LIBRARY) $(TESTUTIL) -o $@ $(LDFLAGS) /usr/local/lib/libsqlite3.a -ldl
+
+db_bench_sqlm: doc/bench/db_bench_sqlo.o $(LIBRARY) $(TESTUTIL)
+	$(CXX) doc/bench/db_bench_sqlo.o $(LIBRARY) $(TESTUTIL) -o $@ $(LDFLAGS) /usr/local/lib/libsqlite3lmdb.a -ldl
+
+db_bench_tree_db: doc/bench/db_bench_tree_db.o $(LIBRARY) $(TESTUTIL)
+	$(CXX) doc/bench/db_bench_tree_db.o $(LIBRARY) $(TESTUTIL) -o $@ $(LDFLAGS) /usr/local/lib/libkyotocabinet.a
+
+db_bench_mdb: doc/bench/db_bench_mdb.o $(LIBRARY) $(TESTUTIL)
+	$(CXX) doc/bench/db_bench_mdb.o $(LIBRARY) $(TESTUTIL) -o $@ $(LDFLAGS) /usr/local/lib/liblmdb.a
+
+db_bench_bdb: doc/bench/db_bench_bdb.o $(LIBRARY) $(TESTUTIL)
+	$(CXX) doc/bench/db_bench_bdb.o $(LIBRARY) $(TESTUTIL) -o $@ $(LDFLAGS) /usr/local/lib/libdb.a
+
+db_bench_sophia: doc/bench/db_bench_sophia.o $(LIBRARY) $(TESTUTIL)
+	$(CXX) doc/bench/db_bench_sophia.o $(LIBRARY) $(TESTUTIL) -o $@ $(LDFLAGS) /usr/local/lib/libsophia.a
+
+db_bench_tokudb: doc/bench/db_bench_tokudb.o $(LIBRARY) $(TESTUTIL)
+	$(CXX) doc/bench/db_bench_tokudb.o $(LIBRARY) $(TESTUTIL) -o $@ $(LDFLAGS) /usr/local/lib/libtokufractaltree_static.a /usr/local/lib/libtokuportability_static.a -ldl -lz
+
+db_bench_ydb: doc/bench/db_bench_ydb.o $(LIBRARY) $(TESTUTIL)
+#	$(CXX) doc/bench/db_bench_ydb.o $(LIBRARY) $(TESTUTIL) -o $@ $(LDFLAGS) /usr/local/lib/libtokufractaltree_static.a /usr/local/lib/libtokuportability_static.a /usr/local/lib/libjemalloc.a -ldl -lz
+	$(CXX) doc/bench/db_bench_ydb.o $(LIBRARY) $(TESTUTIL) -o $@ $(LDFLAGS) -ltokufractaltree -ltokuportability -ljemalloc -ldl -lz
 
 arena_test: util/arena_test.o $(LIBOBJECTS) $(TESTHARNESS)
 	$(CXX) util/arena_test.o $(LIBOBJECTS) $(TESTHARNESS) -o $@ $(LDFLAGS)

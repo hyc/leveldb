@@ -4,7 +4,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <kcpolydb.h>
+#include <tokudb.h>
 #include "util/histogram.h"
 #include "util/random.h"
 #include "util/testutil.h"
@@ -16,7 +16,9 @@
 //   fillrandom    -- write N values in random key order in async mode
 //   overwrite     -- overwrite N values in random key order in async mode
 //   fillseqsync   -- write N/100 values in sequential key order in sync mode
+//   fillseqbatch  -- batch write N values in sequential key order in async mode
 //   fillrandsync  -- write N/100 values in random key order in sync mode
+//   fillrandbatch  -- batch write N values in random key order in async mode
 //   fillrand100K  -- write N/1000 100K values in random order in async mode
 //   fillseq100K   -- write N/1000 100K values in seq order in async mode
 //   readseq       -- read N times sequentially
@@ -28,8 +30,13 @@ static const char* FLAGS_benchmarks =
     "fillseqsync,"
     "fillrandsync,"
     "fillseq,"
+    "fillseqbatch,"
     "fillrandom,"
+    "fillrandbatch,"
     "overwrite,"
+#if 0
+    "overwritebatch,"
+#endif
     "readrandom,"
     "readseq,"
     "readreverse,"
@@ -68,23 +75,13 @@ static int FLAGS_page_size = 1024;
 // benchmark will fail.
 static bool FLAGS_use_existing_db = false;
 
-// Compression flag. If true, compression is on. If false, compression
-// is off.
-static bool FLAGS_compression = true;
+// If true, we allow batch writes to occur
+static bool FLAGS_transaction = true;
 
 // Use the db with the following name.
 static const char* FLAGS_db = NULL;
 
 static int *shuff = NULL;
-
-inline
-static void DBSynchronize(kyotocabinet::TreeDB* db_)
-{
-  // Synchronize will flush writes to disk
-  if (!db_->synchronize()) {
-    fprintf(stderr, "synchronize error: %s\n", db_->error().name());
-  }
-}
 
 namespace leveldb {
 
@@ -137,7 +134,8 @@ static Slice TrimSpace(Slice s) {
 
 class Benchmark {
  private:
-  kyotocabinet::TreeDB* db_;
+  DB_ENV *db_;
+  DB *dbh_;
   int db_num_;
   int num_;
   int reads_;
@@ -148,7 +146,6 @@ class Benchmark {
   Histogram hist_;
   RandomGenerator gen_;
   Random rand_;
-  kyotocabinet::LZOCompressor<kyotocabinet::LZO::RAW> comp_;
 
   // State kept for progress messages
   int done_;
@@ -185,8 +182,7 @@ class Benchmark {
   }
 
   void PrintEnvironment() {
-    fprintf(stderr, "Kyoto Cabinet:    version %s, lib ver %d, lib rev %d\n",
-            kyotocabinet::VERSION, kyotocabinet::LIBVER, kyotocabinet::LIBREV);
+    fprintf(stderr, "BerkeleyDB:    version %s\n", DB_VERSION_STRING);
 
 #if defined(__linux)
     time_t now = time(NULL);
@@ -293,9 +289,15 @@ class Benchmark {
     FRESH,
     EXISTING
   };
+  enum DBFlags {
+    NONE = 0,
+  	SYNC,
+	INT
+  };
 
   Benchmark()
   : db_(NULL),
+  	dbh_(NULL),
     db_num_(0),
     num_(FLAGS_num),
     reads_(FLAGS_reads < 0 ? FLAGS_num : FLAGS_reads),
@@ -307,7 +309,7 @@ class Benchmark {
     Env::Default()->GetChildren(test_dir.c_str(), &files);
     if (!FLAGS_use_existing_db) {
       for (int i = 0; i < files.size(); i++) {
-        if (Slice(files[i]).starts_with("dbbench_polyDB")) {
+        if (Slice(files[i]).starts_with("dbbench_bdb")) {
           std::string file_name(test_dir);
           file_name += "/";
           file_name += files[i];
@@ -318,9 +320,10 @@ class Benchmark {
   }
 
   ~Benchmark() {
-    if (!db_->close()) {
-      fprintf(stderr, "close error: %s\n", db_->error().name());
-    }
+  	if (dbh_)
+		dbh_->close(dbh_, 0);
+	if (db_)
+		db_->close(db_, 0);
   }
 
   void Run() {
@@ -342,45 +345,47 @@ class Benchmark {
       Start();
 
       bool known = true, writer = false;
-      bool write_sync = false;
+	  DBFlags flags = NONE;
       if (name == Slice("fillseq")) {
 	writer = true;
-        Write(write_sync, SEQUENTIAL, FRESH, num_, FLAGS_value_size, 1);
-        DBSynchronize(db_);
+        Write(flags, SEQUENTIAL, FRESH, num_, FLAGS_value_size, 1);
+      } else if (name == Slice("fillseqbatch")) {
+	writer = true;
+        Write(flags, SEQUENTIAL, FRESH, num_, FLAGS_value_size, 1000);
       } else if (name == Slice("fillrandom")) {
 	writer = true;
-        Write(write_sync, RANDOM, FRESH, num_, FLAGS_value_size, 1);
-        DBSynchronize(db_);
+        Write(flags, RANDOM, FRESH, num_, FLAGS_value_size, 1);
+      } else if (name == Slice("fillrandbatch")) {
+	writer = true;
+        Write(flags, RANDOM, FRESH, num_, FLAGS_value_size, 1000);
       } else if (name == Slice("overwrite")) {
 	writer = true;
-        Write(write_sync, RANDOM, EXISTING, num_, FLAGS_value_size, 1);
-        DBSynchronize(db_);
+        Write(flags, RANDOM, EXISTING, num_, FLAGS_value_size, 1);
+      } else if (name == Slice("overwritebatch")) {
+	writer = true;
+        Write(flags, RANDOM, EXISTING, num_, FLAGS_value_size, 1000);
       } else if (name == Slice("fillrandsync")) {
 	writer = true;
-        write_sync = true;
+        flags = SYNC;
 #if 1
 		num_ /= 1000;
 		if (num_<10) num_=10;
 #endif
-        Write(write_sync, RANDOM, FRESH, num_, FLAGS_value_size, 1);
-        DBSynchronize(db_);
+        Write(flags, RANDOM, FRESH, num_, FLAGS_value_size, 1);
       } else if (name == Slice("fillseqsync")) {
 	writer = true;
-        write_sync = true;
+        flags = SYNC;
 #if 1
 		num_ /= 1000;
 		if (num_<10) num_=10;
 #endif
-        Write(write_sync, SEQUENTIAL, FRESH, num_, FLAGS_value_size, 1);
-        DBSynchronize(db_);
+        Write(flags, SEQUENTIAL, FRESH, num_, FLAGS_value_size, 1);
       } else if (name == Slice("fillrand100K")) {
 	writer = true;
-        Write(write_sync, RANDOM, FRESH, num_ / 1000, 100 * 1000, 1);
-        DBSynchronize(db_);
+        Write(flags, RANDOM, FRESH, num_ / 1000, 100 * 1000, 1);
       } else if (name == Slice("fillseq100K")) {
 	writer = true;
-        Write(write_sync, SEQUENTIAL, FRESH, num_ / 1000, 100 * 1000, 1);
-        DBSynchronize(db_);
+        Write(flags, SEQUENTIAL, FRESH, num_ / 1000, 100 * 1000, 1);
       } else if (name == Slice("readseq")) {
         ReadSequential();
       } else if (name == Slice("readreverse")) {
@@ -409,7 +414,7 @@ class Benchmark {
 	  char cmd[200];
 	  std::string test_dir;
 	  Env::Default()->GetTestDirectory(&test_dir);
-	  sprintf(cmd, "du %s/*", test_dir.c_str());
+	  sprintf(cmd, "du %s", test_dir.c_str());
 	  system(cmd);
 	}
       }
@@ -417,42 +422,43 @@ class Benchmark {
   }
 
  private:
-    void Open(bool sync) {
+    void Open(DBFlags flags) {
     assert(db_ == NULL);
+	int rc;
+	DB_TXN *txn;
 
-    // Initialize db_
-    db_ = new kyotocabinet::TreeDB();
-    char file_name[100];
+    char file_name[100], cmd[200];
     db_num_++;
     std::string test_dir;
     Env::Default()->GetTestDirectory(&test_dir);
     snprintf(file_name, sizeof(file_name),
-             "%s/dbbench_polyDB-%d.kct",
+             "%s/dbbench_bdb-%d",
              test_dir.c_str(),
              db_num_);
 
+	sprintf(cmd, "mkdir -p %s", file_name);
+	system(cmd);
+
+	int env_opt = 0;
+
     // Create tuning options and open the database
-    int open_options = kyotocabinet::PolyDB::OWRITER |
-                       kyotocabinet::PolyDB::OCREATE;
-    int tune_options = kyotocabinet::TreeDB::TSMALL |
-        kyotocabinet::TreeDB::TLINEAR;
-    if (FLAGS_compression) {
-      tune_options |= kyotocabinet::TreeDB::TCOMPRESS;
-      db_->tune_compressor(&comp_);
+	rc = db_env_create(&db_, 0);
+	rc = db_->set_cachesize(db_, 0, FLAGS_cache_size, 1);
+	if (flags != SYNC)
+		env_opt |= DB_TXN_WRITE_NOSYNC;
+	rc =db_->set_flags(db_, env_opt, 1);
+#define TXN_FLAGS	(DB_INIT_LOCK|DB_INIT_LOG|DB_INIT_TXN|DB_INIT_MPOOL|DB_CREATE|DB_THREAD|DB_PRIVATE)
+	rc = db_->open(db_, file_name, TXN_FLAGS, 0664);
+	if (rc) {
+      fprintf(stderr, "open error: %s\n", db_strerror(rc));
     }
-    db_->tune_options(tune_options);
-    db_->tune_page_cache(FLAGS_cache_size);
-    db_->tune_page(FLAGS_page_size);
-    db_->tune_map(256LL<<20);
-    if (sync) {
-      open_options |= kyotocabinet::PolyDB::OAUTOSYNC;
-    }
-    if (!db_->open(file_name, open_options)) {
-      fprintf(stderr, "open error: %s\n", db_->error().name());
-    }
+	rc = db_create(&dbh_, db_, 0);
+	rc = db_->txn_begin(db_, 0, &txn, 0);
+	rc = dbh_->open(dbh_, txn, "data.bdb", NULL, DB_BTREE, DB_CREATE|DB_THREAD, 0664);
+	rc = txn->commit(txn, 0);
   }
 
-  void Write(bool sync, Order order, DBState state,
+  void Write(DBFlags flags, Order order, DBState state,
              int num_entries, int value_size, int entries_per_batch) {
     // Create new database if state == FRESH
     if (state == FRESH) {
@@ -460,14 +466,19 @@ class Benchmark {
         message_ = "skipping (--use_existing_db is true)";
         return;
       }
-      delete db_;
-      {
-        char cmd[200];
-	sprintf(cmd, "rm -rf %s*", FLAGS_db);
-	system(cmd);
-      }
-      db_ = NULL;
-      Open(sync);
+	  if (db_) {
+		  char cmd[200];
+		  sprintf(cmd, "rm -rf %s*", FLAGS_db);
+		  dbh_->close(dbh_, 0);
+		  db_->close(db_, 0);
+		  system(cmd);
+		  db_ = NULL;
+		  dbh_ = NULL;
+	  }
+      Open(flags);
+    } else {
+#define DB_FORCE	0
+	db_->txn_checkpoint(db_,0,0,DB_FORCE);
     }
 
     if (order == RANDOM)
@@ -481,53 +492,84 @@ class Benchmark {
       message_ = msg;
     }
 
+	DBT mkey, mval;
+	DB_TXN *txn;
+	char key[100];
+	mkey.data = key;
+	mval.size = value_size;
+	mkey.flags = 0; mval.flags = 0;
     // Write to database
-    for (int i = 0; i < num_entries; i++)
+    for (int i = 0; i < num_entries; i+= entries_per_batch)
     {
-      const int k = (order == SEQUENTIAL) ? i : shuff[i];
-      char key[100];
-      snprintf(key, sizeof(key), "%016d", k);
-      bytes_ += value_size + strlen(key);
-      std::string cpp_key = key;
-      if (!db_->set(cpp_key, gen_.Generate(value_size).ToString())) {
-        fprintf(stderr, "set error: %s\n", db_->error().name());
+	  db_->txn_begin(db_, NULL, &txn, 0);
+	  
+	  for (int j=0; j < entries_per_batch; j++) {
+
+      const int k = (order == SEQUENTIAL) ? i+j : shuff[i+j];
+	  int rc, flag = 0;
+	  mkey.size = snprintf(key, sizeof(key), "%016d", k);
+      bytes_ += value_size + mkey.size;
+	  mval.data = (void *)gen_.Generate(value_size).data();
+	  rc = dbh_->put(dbh_, txn, &mkey, &mval, 0);
+      if (rc) {
+        fprintf(stderr, "set error: %s\n", db_strerror(rc));
       }
       FinishedSingleOp();
+	  }
+	  txn->commit(txn, 0);
     }
-  }
-
-  void ReadSequential() {
-    kyotocabinet::DB::Cursor* cur = db_->cursor();
-    cur->jump();
-    std::string ckey, cvalue;
-    while (cur->get(&ckey, &cvalue, true)) {
-      bytes_ += ckey.size() + cvalue.size();
-      FinishedSingleOp();
-    }
-    delete cur;
   }
 
   void ReadReverse() {
-    kyotocabinet::DB::Cursor* cur = db_->cursor();
-    cur->jump_back();
-    std::string ckey, cvalue;
-    while (cur->get(&ckey, &cvalue, false)) {
-      bytes_ += ckey.size() + cvalue.size();
-	  cur->step_back();
+    DB_TXN *txn;
+	DBC *cursor;
+	DBT key, data;
+
+	key.flags = 0; data.flags = 0;
+	db_->txn_begin(db_, NULL, &txn, 0);
+	dbh_->cursor(dbh_, txn, &cursor, 0);
+    while (cursor->c_get(cursor, &key, &data, DB_PREV) == 0) {
+      bytes_ += key.size + data.size;
       FinishedSingleOp();
     }
-    delete cur;
+	cursor->c_close(cursor);
+	txn->abort(txn);
+  }
+
+  void ReadSequential() {
+    DB_TXN *txn;
+	DBC *cursor;
+	DBT key, data;
+
+	key.flags = 0; data.flags = 0;
+	db_->txn_begin(db_, NULL, &txn, 0);
+	dbh_->cursor(dbh_, txn, &cursor, 0);
+    while (cursor->c_get(cursor, &key, &data, DB_NEXT) == 0) {
+      bytes_ += key.size + data.size;
+      FinishedSingleOp();
+    }
+	cursor->c_close(cursor);
+	txn->abort(txn);
   }
 
   void ReadRandom() {
-    std::string value;
+    DB_TXN *txn;
+	DBC *cursor;
+	DBT key, data;
+    char ckey[100];
+
+	key.flags = 0; data.flags = 0;
+	key.data = ckey;
+	db_->txn_begin(db_, NULL, &txn, 0);
+	dbh_->cursor(dbh_, txn, &cursor, 0);
     for (int i = 0; i < reads_; i++) {
-      char key[100];
       const int k = rand_.Next() % reads_;
-      snprintf(key, sizeof(key), "%016d", k);
-      db_->get(key, &value);
+      key.size = snprintf(ckey, sizeof(ckey), "%016d", k);
+	  cursor->c_get(cursor, &key, &data, DB_SET);
       FinishedSingleOp();
     }
+	cursor->c_close(cursor);
+	txn->abort(txn);
   }
 };
 
@@ -554,11 +596,6 @@ int main(int argc, char** argv) {
       FLAGS_value_size = n;
     } else if (sscanf(argv[i], "--cache_size=%d%c", &n, &junk) == 1) {
       FLAGS_cache_size = n;
-    } else if (sscanf(argv[i], "--page_size=%d%c", &n, &junk) == 1) {
-      FLAGS_page_size = n;
-    } else if (sscanf(argv[i], "--compression=%d%c", &n, &junk) == 1 &&
-               (n == 0 || n == 1)) {
-      FLAGS_compression = (n == 1) ? true : false;
     } else if (strncmp(argv[i], "--db=", 5) == 0) {
       FLAGS_db = argv[i] + 5;
     } else {

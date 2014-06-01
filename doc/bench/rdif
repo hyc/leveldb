@@ -1,0 +1,43 @@
+--- db_bench_mdb.cc.O	2012-09-05 21:22:22.000000000 -0700
++++ db_bench_mdb.cc	2012-09-05 21:46:01.000000000 -0700
+@@ -85,6 +85,8 @@
+ // Use the db with the following name.
+ static const char* FLAGS_db = NULL;
+ 
++static int *shuff = NULL;
++
+ namespace leveldb {
+ 
+ // Helper for quickly generating random data.
+@@ -481,8 +483,11 @@
+ 		  db_ = NULL;
+ 	  }
+       Open(flags);
+-      Start();  // Do not count time taken to destroy/open
+     }
++	if (order == RANDOM)
++	  rand_.Shuffle(shuff, num_entries);
++
++    Start();  // Do not count time taken to destroy/open
+ 
+     if (num_entries != num_) {
+       char msg[100];
+@@ -513,7 +518,7 @@
+ 	  
+ 	  for (int j=0; j < entries_per_batch; j++) {
+ 
+-      const int k = (order == SEQUENTIAL) ? i+j : (rand_.Next() % num_entries);
++      const int k = (order == SEQUENTIAL) ? i+j : shuff[i+j];
+ 	  int rc;
+ 	  if (flags == INT)
+ 	  	  ikey = k;
+@@ -627,6 +632,9 @@
+       FLAGS_db = default_db_path.c_str();
+   }
+ 
++  shuff = (int *)malloc(FLAGS_num * sizeof(int));
++  for (int i=0; i<FLAGS_num; i++)
++  	shuff[i] = i;
+   leveldb::Benchmark benchmark;
+   benchmark.Run();
+   return 0;

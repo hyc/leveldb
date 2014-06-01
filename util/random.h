@@ -52,6 +52,19 @@ class Random {
   uint32_t Skewed(int max_log) {
     return Uniform(1 << Uniform(max_log + 1));
   }
+
+  // Shuffle the array into random order
+  void Shuffle(int *array, int n) {
+  	if (n > 1) {
+	  int i;
+	  for (i=0; i<n-1; i++) {
+	  	int j = i + Next() / (2147483647 / (n-i) + 1);
+		int t = array[j];
+		array[j] = array[i];
+		array[i] = t;
+	  }
+	}
+  }
 };
 
 }  // namespace leveldb

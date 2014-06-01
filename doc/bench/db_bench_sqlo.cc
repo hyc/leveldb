@@ -476,6 +476,20 @@ class Benchmark {
     status = sqlite3_exec(db_, cache_size, NULL, NULL, &err_msg);
     ExecErrorCheck(status, err_msg);
 
+    // Change SQLite max page count - for LMDB
+    snprintf(cache_size, sizeof(cache_size), "PRAGMA max_page_count = %d",
+             FLAGS_num*3L*FLAGS_value_size/2024);
+    status = sqlite3_exec(db_, cache_size, NULL, NULL, &err_msg);
+    ExecErrorCheck(status, err_msg);
+
+#if 0
+    // Change SQLite mmap limit
+    snprintf(cache_size, sizeof(cache_size), "PRAGMA mmap_size = %d",
+             FLAGS_num*6L*FLAGS_value_size);
+    status = sqlite3_exec(db_, cache_size, NULL, NULL, &err_msg);
+    ExecErrorCheck(status, err_msg);
+#endif
+
     // FLAGS_page_size is defaulted to 1024
     if (FLAGS_page_size != 1024) {
       char page_size[100];
@@ -503,6 +517,8 @@ class Benchmark {
           "CREATE TABLE test (key blob, value blob, PRIMARY KEY(key))";
     std::string stmt_array[] = { locking_stmt, create_stmt };
     int stmt_array_length = sizeof(stmt_array) / sizeof(std::string);
+    if (FLAGS_use_existing_db)
+	  stmt_array_length--;
     for (int i = 0; i < stmt_array_length; i++) {
       status = sqlite3_exec(db_, stmt_array[i].c_str(), NULL, NULL, &err_msg);
       ExecErrorCheck(status, err_msg);
@@ -524,8 +540,9 @@ class Benchmark {
 	system(cmd);
       }
       db_ = NULL;
-      Open();
     }
+    if (!db_)
+      Open();
 
     if (order == RANDOM)
 	  rand_.Shuffle(shuff, num_entries);

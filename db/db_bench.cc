@@ -41,14 +41,20 @@
 //      sstables    -- Print sstable info
 //      heapprofile -- Dump a heap profile (if supported by this port)
 static const char* FLAGS_benchmarks =
+    "fillseqsync,"
+    "fillrandsync,"
     "fillseq,"
-    "fillsync,"
+    "fillseqbatch,"
     "fillrandom,"
+    "fillrandbatch,"
     "overwrite,"
     "readrandom,"
+#if 0
     "readrandom,"  // Extra run to allow previous compactions to quiesce
+#endif
     "readseq,"
     "readreverse,"
+#if 0
     "compact,"
     "readrandom,"
     "readseq,"
@@ -58,6 +64,7 @@ static const char* FLAGS_benchmarks =
     "snappycomp,"
     "snappyuncomp,"
     "acquireload,"
+#endif
     ;
 
 // Number of key/values to place in database
@@ -101,6 +108,8 @@ static bool FLAGS_use_existing_db = false;
 
 // Use the db with the following name.
 static const char* FLAGS_db = NULL;
+
+static int *shuff = NULL;
 
 namespace leveldb {
 
@@ -445,19 +454,34 @@ class Benchmark {
       if (name == Slice("fillseq")) {
         fresh_db = true;
         method = &Benchmark::WriteSeq;
-      } else if (name == Slice("fillbatch")) {
+      } else if (name == Slice("fillseqbatch")) {
         fresh_db = true;
         entries_per_batch_ = 1000;
         method = &Benchmark::WriteSeq;
+      } else if (name == Slice("fillrandbatch")) {
+        fresh_db = true;
+        entries_per_batch_ = 1000;
+        method = &Benchmark::WriteRandom;
       } else if (name == Slice("fillrandom")) {
         fresh_db = true;
         method = &Benchmark::WriteRandom;
       } else if (name == Slice("overwrite")) {
         fresh_db = false;
         method = &Benchmark::WriteRandom;
-      } else if (name == Slice("fillsync")) {
+      } else if (name == Slice("fillseqsync")) {
         fresh_db = true;
+#if 1
         num_ /= 1000;
+		if (num_<10) num_=10;
+#endif
+        write_options_.sync = true;
+        method = &Benchmark::WriteSeq;
+      } else if (name == Slice("fillrandsync")) {
+        fresh_db = true;
+#if 0
+        num_ /= 1000;
+		if (num_<10) num_=10;
+#endif
         write_options_.sync = true;
         method = &Benchmark::WriteRandom;
       } else if (name == Slice("fill100K")) {
@@ -524,6 +548,14 @@ class Benchmark {
 
       if (method != NULL) {
         RunBenchmark(num_threads, name, method);
+	if (method == &Benchmark::WriteSeq ||
+	    method == &Benchmark::WriteRandom) {
+	  char cmd[200];
+	  std::string test_dir;
+	  Env::Default()->GetTestDirectory(&test_dir);
+	  sprintf(cmd, "du %s", test_dir.c_str());
+	  system(cmd);
+	}
       }
     }
   }
@@ -716,6 +748,8 @@ class Benchmark {
       thread->stats.AddMessage(msg);
     }
 
+	if (!seq)
+	  thread->rand.Shuffle(shuff, num_);
     RandomGenerator gen;
     WriteBatch batch;
     Status s;
@@ -723,10 +757,10 @@ class Benchmark {
     for (int i = 0; i < num_; i += entries_per_batch_) {
       batch.Clear();
       for (int j = 0; j < entries_per_batch_; j++) {
-        const int k = seq ? i+j : (thread->rand.Next() % FLAGS_num);
+        const int k = seq ? i+j : shuff[i+j];
         char key[100];
         snprintf(key, sizeof(key), "%016d", k);
-        batch.Put(key, gen.Generate(value_size_));
+        batch.Put(key, Slice(gen.Generate(value_size_).ToString()));
         bytes += value_size_ + strlen(key);
         thread->stats.FinishedSingleOp();
       }
@@ -972,6 +1006,9 @@ int main(int argc, char** argv) {
       FLAGS_db = default_db_path.c_str();
   }
 
+  shuff = (int *)malloc(FLAGS_num * sizeof(int));
+  for (int i=0; i<FLAGS_num; i++)
+    shuff[i] = i;
   leveldb::Benchmark benchmark;
   benchmark.Run();
   return 0;

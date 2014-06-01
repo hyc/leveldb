@@ -159,9 +159,9 @@ EOF
     $CXX $CFLAGS -x c++ - -o /dev/null -ltcmalloc 2>/dev/null  <<EOF
       int main() {}
 EOF
-    if [ "$?" = 0 ]; then
-        PLATFORM_LDFLAGS="$PLATFORM_LDFLAGS -ltcmalloc"
-    fi
+#    if [ "$?" = 0 ]; then
+#        PLATFORM_LDFLAGS="$PLATFORM_LDFLAGS -ltcmalloc"
+#    fi
 fi
 
 PLATFORM_CCFLAGS="$PLATFORM_CCFLAGS $COMMON_FLAGS"

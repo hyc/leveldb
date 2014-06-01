@@ -4,7 +4,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <kcpolydb.h>
+#include <lmdb.h>
 #include "util/histogram.h"
 #include "util/random.h"
 #include "util/testutil.h"
@@ -14,9 +14,13 @@
 //
 //   fillseq       -- write N values in sequential key order in async mode
 //   fillrandom    -- write N values in random key order in async mode
+//   fillrandint   -- write N values in random binary key order in async mode
 //   overwrite     -- overwrite N values in random key order in async mode
 //   fillseqsync   -- write N/100 values in sequential key order in sync mode
+//   fillseqbatch  -- batch write N values in sequential key order in async mode
 //   fillrandsync  -- write N/100 values in random key order in sync mode
+//   fillrandbatch  -- batch write N values in random key order in async mode
+//   fillrandibatch  -- batch write N values in random binary key order in async mode
 //   fillrand100K  -- write N/1000 100K values in random order in async mode
 //   fillseq100K   -- write N/1000 100K values in seq order in async mode
 //   readseq       -- read N times sequentially
@@ -28,8 +32,13 @@ static const char* FLAGS_benchmarks =
     "fillseqsync,"
     "fillrandsync,"
     "fillseq,"
+    "fillseqbatch,"
     "fillrandom,"
+    "fillrandbatch,"
     "overwrite,"
+#if 0
+    "overwritebatch,"
+#endif
     "readrandom,"
     "readseq,"
     "readreverse,"
@@ -47,8 +56,13 @@ static int FLAGS_num = 1000000;
 // Number of read operations to do.  If negative, do FLAGS_num reads.
 static int FLAGS_reads = -1;
 
+static int FLAGS_cleanmem = 0;
+
 // Size of each value
 static int FLAGS_value_size = 100;
+
+// Number of key/values to place in database
+static int FLAGS_batch = 1000;
 
 // Arrange to generate values that shrink to this fraction of
 // their original size after compression
@@ -56,9 +70,6 @@ static double FLAGS_compression_ratio = 0.5;
 
 // Print histogram of operation timings
 static bool FLAGS_histogram = false;
-
-// Cache size. Default 4 MB
-static int FLAGS_cache_size = 4194304;
 
 // Page size. Default 1 KB
 static int FLAGS_page_size = 1024;
@@ -68,23 +79,19 @@ static int FLAGS_page_size = 1024;
 // benchmark will fail.
 static bool FLAGS_use_existing_db = false;
 
-// Compression flag. If true, compression is on. If false, compression
-// is off.
-static bool FLAGS_compression = true;
+// If true, we allow batch writes to occur
+static bool FLAGS_transaction = true;
+
+// If false, skip sync of meta pages on synchronous writes
+static bool FLAGS_metasync = true;
+
+// If true, use writable mmap
+static bool FLAGS_writemap = true;
 
 // Use the db with the following name.
 static const char* FLAGS_db = NULL;
 
 static int *shuff = NULL;
-
-inline
-static void DBSynchronize(kyotocabinet::TreeDB* db_)
-{
-  // Synchronize will flush writes to disk
-  if (!db_->synchronize()) {
-    fprintf(stderr, "synchronize error: %s\n", db_->error().name());
-  }
-}
 
 namespace leveldb {
 
@@ -137,7 +144,8 @@ static Slice TrimSpace(Slice s) {
 
 class Benchmark {
  private:
-  kyotocabinet::TreeDB* db_;
+  MDB_env *db_;
+  MDB_dbi dbi_;
   int db_num_;
   int num_;
   int reads_;
@@ -148,7 +156,6 @@ class Benchmark {
   Histogram hist_;
   RandomGenerator gen_;
   Random rand_;
-  kyotocabinet::LZOCompressor<kyotocabinet::LZO::RAW> comp_;
 
   // State kept for progress messages
   int done_;
@@ -185,8 +192,7 @@ class Benchmark {
   }
 
   void PrintEnvironment() {
-    fprintf(stderr, "Kyoto Cabinet:    version %s, lib ver %d, lib rev %d\n",
-            kyotocabinet::VERSION, kyotocabinet::LIBVER, kyotocabinet::LIBREV);
+    fprintf(stderr, "MDB:    version %s\n", mdb_version(NULL, NULL, NULL));
 
 #if defined(__linux)
     time_t now = time(NULL);
@@ -293,6 +299,11 @@ class Benchmark {
     FRESH,
     EXISTING
   };
+  enum DBFlags {
+    NONE = 0,
+  	SYNC,
+	INT
+  };
 
   Benchmark()
   : db_(NULL),
@@ -307,7 +318,7 @@ class Benchmark {
     Env::Default()->GetChildren(test_dir.c_str(), &files);
     if (!FLAGS_use_existing_db) {
       for (int i = 0; i < files.size(); i++) {
-        if (Slice(files[i]).starts_with("dbbench_polyDB")) {
+        if (Slice(files[i]).starts_with("dbbench_mdb")) {
           std::string file_name(test_dir);
           file_name += "/";
           file_name += files[i];
@@ -318,9 +329,7 @@ class Benchmark {
   }
 
   ~Benchmark() {
-    if (!db_->close()) {
-      fprintf(stderr, "close error: %s\n", db_->error().name());
-    }
+  	mdb_env_close(db_);
   }
 
   void Run() {
@@ -342,45 +351,55 @@ class Benchmark {
       Start();
 
       bool known = true, writer = false;
-      bool write_sync = false;
+	  DBFlags flags = NONE;
       if (name == Slice("fillseq")) {
 	writer = true;
-        Write(write_sync, SEQUENTIAL, FRESH, num_, FLAGS_value_size, 1);
-        DBSynchronize(db_);
+        Write(flags, SEQUENTIAL, FRESH, num_, FLAGS_value_size, 1);
+      } else if (name == Slice("fillseqbatch")) {
+	writer = true;
+        Write(flags, SEQUENTIAL, FRESH, num_, FLAGS_value_size, FLAGS_batch);
       } else if (name == Slice("fillrandom")) {
 	writer = true;
-        Write(write_sync, RANDOM, FRESH, num_, FLAGS_value_size, 1);
-        DBSynchronize(db_);
+        Write(flags, RANDOM, FRESH, num_, FLAGS_value_size, 1);
+      } else if (name == Slice("fillrandbatch")) {
+	writer = true;
+        Write(flags, RANDOM, FRESH, num_, FLAGS_value_size, FLAGS_batch);
+      } else if (name == Slice("fillrandint")) {
+	writer = true;
+	  	flags = INT;
+        Write(flags, RANDOM, FRESH, num_, FLAGS_value_size, 1);
+      } else if (name == Slice("fillrandibatch")) {
+	writer = true;
+	  	flags = INT;
+        Write(flags, RANDOM, FRESH, num_, FLAGS_value_size, FLAGS_batch);
       } else if (name == Slice("overwrite")) {
 	writer = true;
-        Write(write_sync, RANDOM, EXISTING, num_, FLAGS_value_size, 1);
-        DBSynchronize(db_);
+        Write(flags, RANDOM, EXISTING, num_, FLAGS_value_size, 1);
+      } else if (name == Slice("overwritebatch")) {
+	writer = true;
+        Write(flags, RANDOM, EXISTING, num_, FLAGS_value_size, FLAGS_batch);
       } else if (name == Slice("fillrandsync")) {
 	writer = true;
-        write_sync = true;
+        flags = SYNC;
 #if 1
 		num_ /= 1000;
 		if (num_<10) num_=10;
 #endif
-        Write(write_sync, RANDOM, FRESH, num_, FLAGS_value_size, 1);
-        DBSynchronize(db_);
+        Write(flags, RANDOM, FRESH, num_, FLAGS_value_size, 1);
       } else if (name == Slice("fillseqsync")) {
 	writer = true;
-        write_sync = true;
+        flags = SYNC;
 #if 1
 		num_ /= 1000;
 		if (num_<10) num_=10;
 #endif
-        Write(write_sync, SEQUENTIAL, FRESH, num_, FLAGS_value_size, 1);
-        DBSynchronize(db_);
+        Write(flags, SEQUENTIAL, FRESH, num_, FLAGS_value_size, 1);
       } else if (name == Slice("fillrand100K")) {
 	writer = true;
-        Write(write_sync, RANDOM, FRESH, num_ / 1000, 100 * 1000, 1);
-        DBSynchronize(db_);
+        Write(flags, RANDOM, FRESH, num_ / 1000, 100 * 1000, 1);
       } else if (name == Slice("fillseq100K")) {
 	writer = true;
-        Write(write_sync, SEQUENTIAL, FRESH, num_ / 1000, 100 * 1000, 1);
-        DBSynchronize(db_);
+        Write(flags, SEQUENTIAL, FRESH, num_ / 1000, 100 * 1000, 1);
       } else if (name == Slice("readseq")) {
         ReadSequential();
       } else if (name == Slice("readreverse")) {
@@ -409,7 +428,7 @@ class Benchmark {
 	  char cmd[200];
 	  std::string test_dir;
 	  Env::Default()->GetTestDirectory(&test_dir);
-	  sprintf(cmd, "du %s/*", test_dir.c_str());
+	  sprintf(cmd, "du %s", test_dir.c_str());
 	  system(cmd);
 	}
       }
@@ -417,42 +436,51 @@ class Benchmark {
   }
 
  private:
-    void Open(bool sync) {
+    void Open(DBFlags flags) {
     assert(db_ == NULL);
+	int rc;
+	MDB_txn *txn;
 
-    // Initialize db_
-    db_ = new kyotocabinet::TreeDB();
-    char file_name[100];
+    char file_name[100], cmd[200];
     db_num_++;
     std::string test_dir;
     Env::Default()->GetTestDirectory(&test_dir);
     snprintf(file_name, sizeof(file_name),
-             "%s/dbbench_polyDB-%d.kct",
+             "%s/dbbench_mdb-%d",
              test_dir.c_str(),
              db_num_);
 
+	sprintf(cmd, "mkdir -p %s", file_name);
+	system(cmd);
+
+	int env_opt = 0;
+	size_t msize;
+	if (flags != SYNC)
+		env_opt = MDB_NOSYNC;
+	else if (!FLAGS_metasync)
+		env_opt = MDB_NOMETASYNC;
+
+	if (FLAGS_writemap)
+		env_opt |= MDB_WRITEMAP;
+#ifdef MDB_CLEANMEM
+	if (FLAGS_cleanmem)
+		env_opt |= MDB_CLEANMEM;
+#endif
+
     // Create tuning options and open the database
-    int open_options = kyotocabinet::PolyDB::OWRITER |
-                       kyotocabinet::PolyDB::OCREATE;
-    int tune_options = kyotocabinet::TreeDB::TSMALL |
-        kyotocabinet::TreeDB::TLINEAR;
-    if (FLAGS_compression) {
-      tune_options |= kyotocabinet::TreeDB::TCOMPRESS;
-      db_->tune_compressor(&comp_);
+	rc = mdb_env_create(&db_);
+	msize = FLAGS_num*32L*FLAGS_value_size/10;
+	rc = mdb_env_set_mapsize(db_, msize);
+	rc = mdb_env_open(db_, file_name, env_opt, 0664);
+	if (rc) {
+      fprintf(stderr, "open error: %s\n", mdb_strerror(rc));
     }
-    db_->tune_options(tune_options);
-    db_->tune_page_cache(FLAGS_cache_size);
-    db_->tune_page(FLAGS_page_size);
-    db_->tune_map(256LL<<20);
-    if (sync) {
-      open_options |= kyotocabinet::PolyDB::OAUTOSYNC;
-    }
-    if (!db_->open(file_name, open_options)) {
-      fprintf(stderr, "open error: %s\n", db_->error().name());
-    }
+	rc = mdb_txn_begin(db_, NULL, 0, &txn);
+	rc = mdb_open(txn, NULL, flags == INT ? MDB_INTEGERKEY:0, &dbi_);
+	rc = mdb_txn_commit(txn);
   }
 
-  void Write(bool sync, Order order, DBState state,
+  void Write(DBFlags flags, Order order, DBState state,
              int num_entries, int value_size, int entries_per_batch) {
     // Create new database if state == FRESH
     if (state == FRESH) {
@@ -460,17 +488,16 @@ class Benchmark {
         message_ = "skipping (--use_existing_db is true)";
         return;
       }
-      delete db_;
-      {
-        char cmd[200];
-	sprintf(cmd, "rm -rf %s*", FLAGS_db);
-	system(cmd);
-      }
-      db_ = NULL;
-      Open(sync);
+	  if (db_) {
+		  char cmd[200];
+		  sprintf(cmd, "rm -rf %s*", FLAGS_db);
+		  mdb_env_close(db_);
+		  system(cmd);
+		  db_ = NULL;
+	  }
+      Open(flags);
     }
-
-    if (order == RANDOM)
+	if (order == RANDOM)
 	  rand_.Shuffle(shuff, num_entries);
 
     Start();  // Do not count time taken to destroy/open
@@ -481,53 +508,98 @@ class Benchmark {
       message_ = msg;
     }
 
+	MDB_val mkey, mval;
+	MDB_txn *txn;
+	char key[100];
+	int ikey, flag = 0;
+	if (flags == INT) {
+		mkey.mv_data = &ikey;
+		mkey.mv_size = sizeof(ikey);
+	} else {
+		mkey.mv_data = key;
+	}
+	mval.mv_size = value_size;
+	if (order == SEQUENTIAL)
+		flag = MDB_APPEND;
+//	flag |= MDB_RESERVE;
     // Write to database
-    for (int i = 0; i < num_entries; i++)
+    for (int i = 0; i < num_entries; i+= entries_per_batch)
     {
-      const int k = (order == SEQUENTIAL) ? i : shuff[i];
-      char key[100];
-      snprintf(key, sizeof(key), "%016d", k);
-      bytes_ += value_size + strlen(key);
-      std::string cpp_key = key;
-      if (!db_->set(cpp_key, gen_.Generate(value_size).ToString())) {
-        fprintf(stderr, "set error: %s\n", db_->error().name());
+	  MDB_cursor *mc;
+	  mdb_txn_begin(db_, NULL, 0, &txn);
+	  mdb_cursor_open(txn, dbi_, &mc);
+	  
+	  for (int j=0; j < entries_per_batch; j++) {
+
+      const int k = (order == SEQUENTIAL) ? i+j : shuff[i+j];
+	  int rc;
+	  if (flags == INT)
+	  	  ikey = k;
+	  else
+		  mkey.mv_size = snprintf(key, sizeof(key), "%016d", k);
+      bytes_ += value_size + mkey.mv_size;
+
+	  mval.mv_data = (void *)gen_.Generate(value_size).data();
+	  mval.mv_size = value_size;
+	  rc = mdb_cursor_put(mc, &mkey, &mval, flag);
+      if (rc) {
+        fprintf(stderr, "set error: %s\n", mdb_strerror(rc));
       }
       FinishedSingleOp();
+	  }
+	  mdb_cursor_close(mc);
+	  mdb_txn_commit(txn);
     }
-  }
-
-  void ReadSequential() {
-    kyotocabinet::DB::Cursor* cur = db_->cursor();
-    cur->jump();
-    std::string ckey, cvalue;
-    while (cur->get(&ckey, &cvalue, true)) {
-      bytes_ += ckey.size() + cvalue.size();
-      FinishedSingleOp();
-    }
-    delete cur;
   }
 
   void ReadReverse() {
-    kyotocabinet::DB::Cursor* cur = db_->cursor();
-    cur->jump_back();
-    std::string ckey, cvalue;
-    while (cur->get(&ckey, &cvalue, false)) {
-      bytes_ += ckey.size() + cvalue.size();
-	  cur->step_back();
+    MDB_txn *txn;
+	MDB_cursor *cursor;
+	MDB_val key, data;
+
+	mdb_txn_begin(db_, NULL, MDB_RDONLY, &txn);
+	mdb_cursor_open(txn, dbi_, &cursor);
+    while (mdb_cursor_get(cursor, &key, &data, MDB_PREV) == 0) {
+      bytes_ += key.mv_size + data.mv_size;
       FinishedSingleOp();
     }
-    delete cur;
+	mdb_cursor_close(cursor);
+	mdb_txn_abort(txn);
+  }
+
+  void ReadSequential() {
+    MDB_txn *txn;
+	MDB_cursor *cursor;
+	MDB_val key, data;
+
+	mdb_txn_begin(db_, NULL, MDB_RDONLY, &txn);
+	mdb_cursor_open(txn, dbi_, &cursor);
+    while (mdb_cursor_get(cursor, &key, &data, MDB_NEXT) == 0) {
+      bytes_ += key.mv_size + data.mv_size;
+      FinishedSingleOp();
+    }
+	mdb_cursor_close(cursor);
+	mdb_txn_abort(txn);
   }
 
   void ReadRandom() {
-    std::string value;
+    MDB_txn *txn;
+	MDB_cursor *cursor;
+	MDB_val key, data;
+    char ckey[100];
+	key.mv_data = ckey;
+	mdb_txn_begin(db_, NULL, MDB_RDONLY, &txn);
+	mdb_cursor_open(txn, dbi_, &cursor);
     for (int i = 0; i < reads_; i++) {
-      char key[100];
       const int k = rand_.Next() % reads_;
-      snprintf(key, sizeof(key), "%016d", k);
-      db_->get(key, &value);
+      key.mv_size = snprintf(ckey, sizeof(ckey), "%016d", k);
+	  if (i) mdb_txn_renew(txn);
+	  mdb_cursor_get(cursor, &key, &data, MDB_SET);
       FinishedSingleOp();
+	  mdb_txn_reset(txn);
     }
+	mdb_cursor_close(cursor);
+	mdb_txn_abort(txn);
   }
 };
 
@@ -546,19 +618,22 @@ int main(int argc, char** argv) {
     } else if (sscanf(argv[i], "--histogram=%d%c", &n, &junk) == 1 &&
                (n == 0 || n == 1)) {
       FLAGS_histogram = n;
+    } else if (sscanf(argv[i], "--metasync=%d%c", &n, &junk) == 1 &&
+               (n == 0 || n == 1)) {
+      FLAGS_metasync = n;
+    } else if (sscanf(argv[i], "--writemap=%d%c", &n, &junk) == 1 &&
+               (n == 0 || n == 1)) {
+      FLAGS_writemap = n;
     } else if (sscanf(argv[i], "--num=%d%c", &n, &junk) == 1) {
       FLAGS_num = n;
+    } else if (sscanf(argv[i], "--batch=%d%c", &n, &junk) == 1) {
+      FLAGS_batch = n;
     } else if (sscanf(argv[i], "--reads=%d%c", &n, &junk) == 1) {
       FLAGS_reads = n;
     } else if (sscanf(argv[i], "--value_size=%d%c", &n, &junk) == 1) {
       FLAGS_value_size = n;
-    } else if (sscanf(argv[i], "--cache_size=%d%c", &n, &junk) == 1) {
-      FLAGS_cache_size = n;
-    } else if (sscanf(argv[i], "--page_size=%d%c", &n, &junk) == 1) {
-      FLAGS_page_size = n;
-    } else if (sscanf(argv[i], "--compression=%d%c", &n, &junk) == 1 &&
-               (n == 0 || n == 1)) {
-      FLAGS_compression = (n == 1) ? true : false;
+    } else if (sscanf(argv[i], "--cleanmem=%d%c", &n, &junk) == 1) {
+      FLAGS_cleanmem = n;
     } else if (strncmp(argv[i], "--db=", 5) == 0) {
       FLAGS_db = argv[i] + 5;
     } else {
@@ -576,7 +651,7 @@ int main(int argc, char** argv) {
 
   shuff = (int *)malloc(FLAGS_num * sizeof(int));
   for (int i=0; i<FLAGS_num; i++)
-   shuff[i] = i;
+  	shuff[i] = i;
   leveldb::Benchmark benchmark;
   benchmark.Run();
   return 0;
