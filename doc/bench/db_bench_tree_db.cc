@@ -25,10 +25,10 @@
 //   readrand100K  -- read N/1000 100K values in sequential order in async mode
 //   readrandom    -- read N times in random order
 static const char* FLAGS_benchmarks =
-    "fillseqsync,"
     "fillrandsync,"
-    "fillseq,"
     "fillrandom,"
+    "fillseqsync,"
+    "fillseq,"
     "overwrite,"
     "readrandom,"
     "readseq,"
@@ -74,6 +74,11 @@ static bool FLAGS_compression = true;
 
 // Use the db with the following name.
 static const char* FLAGS_db = NULL;
+
+// If true, use shuffle instead of original random algorithm.
+// Guarantees full set of unique data, but uses memory for the
+// shuffle array, not feasible for larger tests.
+static bool FLAGS_shuffle = false;
 
 static int *shuff = NULL;
 
@@ -470,7 +475,7 @@ class Benchmark {
       Open(sync);
     }
 
-    if (order == RANDOM)
+    if (order == RANDOM && shuff)
 	  rand_.Shuffle(shuff, num_entries);
 
     Start();  // Do not count time taken to destroy/open
@@ -484,7 +489,7 @@ class Benchmark {
     // Write to database
     for (int i = 0; i < num_entries; i++)
     {
-      const int k = (order == SEQUENTIAL) ? i : shuff[i];
+      const int k = (order == SEQUENTIAL) ? i : (shuff ? shuff[i] : (rand_.Next() % num_entries));
       char key[100];
       snprintf(key, sizeof(key), "%016d", k);
       bytes_ += value_size + strlen(key);
@@ -561,6 +566,9 @@ int main(int argc, char** argv) {
       FLAGS_compression = (n == 1) ? true : false;
     } else if (strncmp(argv[i], "--db=", 5) == 0) {
       FLAGS_db = argv[i] + 5;
+    } else if (sscanf(argv[i], "--shuffle=%d%c", &n, &junk) == 1 &&
+               (n == 0 || n == 1)) {
+      FLAGS_shuffle = n;
     } else {
       fprintf(stderr, "Invalid flag '%s'\n", argv[i]);
       exit(1);
@@ -574,9 +582,11 @@ int main(int argc, char** argv) {
       FLAGS_db = default_db_path.c_str();
   }
 
-  shuff = (int *)malloc(FLAGS_num * sizeof(int));
-  for (int i=0; i<FLAGS_num; i++)
-   shuff[i] = i;
+  if (FLAGS_shuffle) {
+	  shuff = (int *)malloc(FLAGS_num * sizeof(int));
+	  for (int i=0; i<FLAGS_num; i++)
+	   shuff[i] = i;
+  }
   leveldb::Benchmark benchmark;
   benchmark.Run();
   return 0;

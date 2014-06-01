@@ -54,7 +54,7 @@ TESTS = \
 	write_batch_test
 
 PROGRAMS = db_bench leveldbutil $(TESTS)
-BENCHMARKS = db_bench db_bench_sqlite3 db_bench_tree_db db_bench_mdb db_bench_bdb
+BENCHMARKS = db_bench db_bench_sqlite3 db_bench_tree_db db_bench_mdb db_bench_bdb db_bench_sophia db_bench_tokudb
 
 LIBRARY = libleveldb.a
 MEMENVLIBRARY = libmemenv.a

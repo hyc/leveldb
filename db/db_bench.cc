@@ -41,12 +41,12 @@
 //      sstables    -- Print sstable info
 //      heapprofile -- Dump a heap profile (if supported by this port)
 static const char* FLAGS_benchmarks =
-    "fillseqsync,"
     "fillrandsync,"
-    "fillseq,"
-    "fillseqbatch,"
     "fillrandom,"
     "fillrandbatch,"
+    "fillseqsync,"
+    "fillseq,"
+    "fillseqbatch,"
     "overwrite,"
     "readrandom,"
 #if 0
@@ -105,6 +105,11 @@ static int FLAGS_bloom_bits = -1;
 // flag and also specify a benchmark that wants a fresh database, that
 // benchmark will fail.
 static bool FLAGS_use_existing_db = false;
+
+// If true, use shuffle instead of original random algorithm.
+// Guarantees full set of unique data, but uses memory for the
+// shuffle array, not feasible for larger tests.
+static bool FLAGS_shuffle = false;
 
 // Use the db with the following name.
 static const char* FLAGS_db = NULL;
@@ -478,7 +483,7 @@ class Benchmark {
         method = &Benchmark::WriteSeq;
       } else if (name == Slice("fillrandsync")) {
         fresh_db = true;
-#if 0
+#if 1
         num_ /= 1000;
 		if (num_<10) num_=10;
 #endif
@@ -749,7 +754,7 @@ class Benchmark {
       thread->stats.AddMessage(msg);
     }
 
-	if (!seq)
+	if (!seq && shuff)
 	  thread->rand.Shuffle(shuff, num_);
     RandomGenerator gen;
     WriteBatch batch;
@@ -758,7 +763,7 @@ class Benchmark {
     for (int i = 0; i < num_; i += entries_per_batch_) {
       batch.Clear();
       for (int j = 0; j < entries_per_batch_; j++) {
-        const int k = seq ? i+j : shuff[i+j];
+        const int k = seq ? i+j : (shuff ? shuff[i+j] : (thread->rand.Next() % FLAGS_num));
         char key[100];
         snprintf(key, sizeof(key), "%016d", k);
         batch.Put(key, Slice(gen.Generate(value_size_).ToString()));
@@ -994,6 +999,9 @@ int main(int argc, char** argv) {
       FLAGS_open_files = n;
     } else if (strncmp(argv[i], "--db=", 5) == 0) {
       FLAGS_db = argv[i] + 5;
+    } else if (sscanf(argv[i], "--shuffle=%d%c", &n, &junk) == 1 &&
+               (n == 0 || n == 1)) {
+      FLAGS_shuffle = n;
     } else {
       fprintf(stderr, "Invalid flag '%s'\n", argv[i]);
       exit(1);
@@ -1007,9 +1015,11 @@ int main(int argc, char** argv) {
       FLAGS_db = default_db_path.c_str();
   }
 
-  shuff = (int *)malloc(FLAGS_num * sizeof(int));
-  for (int i=0; i<FLAGS_num; i++)
-    shuff[i] = i;
+  if (FLAGS_shuffle) {
+	  shuff = (int *)malloc(FLAGS_num * sizeof(int));
+	  for (int i=0; i<FLAGS_num; i++)
+		shuff[i] = i;
+  }
   leveldb::Benchmark benchmark;
   benchmark.Run();
   return 0;
