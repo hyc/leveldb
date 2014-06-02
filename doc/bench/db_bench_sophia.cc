@@ -387,7 +387,7 @@ class Benchmark {
       } else if (name == Slice("fillrandsync")) {
 	writer = true;
         flags = SYNC;
-#if 0
+#if 1
 		num_ /= 1000;
 		if (num_<10) num_=10;
 #endif
