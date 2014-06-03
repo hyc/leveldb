@@ -542,7 +542,11 @@ class Benchmark {
       }
       FinishedSingleOp();
 	  }
-	  txn->commit(txn, 0);
+          if (flags == SYNC) {
+            txn->commit(txn, 0);
+          } else {
+            txn->commit(txn, DB_TXN_NOSYNC);
+          }
     }
   }
 
