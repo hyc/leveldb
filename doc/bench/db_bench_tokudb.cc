@@ -2,6 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
 
+// Copyright (c) 2012 Howard Chu @ Symas Corp. Terms as above.
+// Thanks to Leif Walsh for assistance/tuning.
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <tokudb.h>
@@ -64,8 +67,8 @@ static double FLAGS_compression_ratio = 0.5;
 // Print histogram of operation timings
 static bool FLAGS_histogram = false;
 
-// Cache size. Default 1 GB
-static int FLAGS_cache_size = 1 << 30;
+// Cache size. Default 4 MB
+static int FLAGS_cache_size = 4194304;
 
 // Page size. Default 1 KB
 static int FLAGS_page_size = 1024;
@@ -78,8 +81,8 @@ static bool FLAGS_use_existing_db = false;
 // If true, we allow batch writes to occur
 static bool FLAGS_transaction = true;
 
-// other possibilities: TOKU_QUICKLZ_METHOD, TOKU_LZMA_METHOD, TOKU_NO_COMPRESSION
-static enum toku_compression_method FLAGS_compression_method = TOKU_ZLIB_WITHOUT_CHECKSUM_METHOD;
+// possibilities: TOKU_QUICKLZ_METHOD, TOKU_LZMA_METHOD, TOKU_NO_COMPRESSION, TOKU_ZLIB_WITHOUT_CHECKSUM_METHOD
+static enum toku_compression_method FLAGS_compression_method = TOKU_NO_COMPRESSION;
 static int FLAGS_node_size = 4 << 20;
 static int FLAGS_basement_node_size = 64 << 10;
 static int FLAGS_checkpoint_period = 60;
@@ -88,7 +91,7 @@ static int FLAGS_cleaner_iterations = 5;
 static int FLAGS_sync_period = 100;
 static int FLAGS_lk_max_memory = 100 << 20;
 static int FLAGS_num_bucket_mutexes = 1 << 20;
-static bool FLAGS_direct_io = true;
+static bool FLAGS_direct_io = false;
 
 // Use the db with the following name.
 static const char* FLAGS_db = NULL;
@@ -542,7 +545,7 @@ class Benchmark {
       }
       FinishedSingleOp();
 	  }
-	  txn->commit(txn, 0);
+	  txn->commit(txn, flags == SYNC ? 0 : DB_TXN_NOSYNC);
     }
   }
 

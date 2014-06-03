@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
 
+// Copyright (c) 2012 Howard Chu @ Symas Corp. Terms as above.
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <lmdb.h>
