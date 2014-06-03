@@ -64,8 +64,8 @@ static double FLAGS_compression_ratio = 0.5;
 // Print histogram of operation timings
 static bool FLAGS_histogram = false;
 
-// Cache size. Default 4 MB
-static int FLAGS_cache_size = 4194304;
+// Cache size. Default 1 GB
+static int FLAGS_cache_size = 1 << 30;
 
 // Page size. Default 1 KB
 static int FLAGS_page_size = 1024;
@@ -77,6 +77,18 @@ static bool FLAGS_use_existing_db = false;
 
 // If true, we allow batch writes to occur
 static bool FLAGS_transaction = true;
+
+// other possibilities: TOKU_QUICKLZ_METHOD, TOKU_LZMA_METHOD, TOKU_NO_COMPRESSION
+static enum toku_compression_method FLAGS_compression_method = TOKU_ZLIB_WITHOUT_CHECKSUM_METHOD;
+static int FLAGS_node_size = 4 << 20;
+static int FLAGS_basement_node_size = 64 << 10;
+static int FLAGS_checkpoint_period = 60;
+static int FLAGS_cleaner_period = 1;
+static int FLAGS_cleaner_iterations = 5;
+static int FLAGS_sync_period = 100;
+static int FLAGS_lk_max_memory = 100 << 20;
+static int FLAGS_num_bucket_mutexes = 1 << 20;
+static bool FLAGS_direct_io = true;
 
 // Use the db with the following name.
 static const char* FLAGS_db = NULL;
@@ -446,21 +458,30 @@ class Benchmark {
 
 	int env_opt = 0;
 
+    db_env_set_direct_io(FLAGS_direct_io);
+    db_env_set_num_bucket_mutexes(FLAGS_num_bucket_mutexes);
+
     // Create tuning options and open the database
 	rc = db_env_create(&db_, 0);
-	rc = db_->set_cachesize(db_, 0, FLAGS_cache_size, 1);
 	if (flags != SYNC)
 		env_opt |= DB_TXN_NOSYNC;
 	rc =db_->set_flags(db_, env_opt, 1);
 #define TXN_FLAGS	(DB_INIT_LOCK|DB_INIT_LOG|DB_INIT_TXN|DB_INIT_MPOOL|DB_CREATE|DB_THREAD|DB_PRIVATE)
 	rc = db_->open(db_, file_name, TXN_FLAGS, 0664);
 	if (rc) {
+    rc = db_->set_lk_max_memory(db_, FLAGS_lk_max_memory);
+    rc = db_->set_cachesize(db_, FLAGS_cache_size / (1 << 30), FLAGS_cache_size % (1 << 30), 1);
+    rc = db_->checkpointing_set_period(db_, FLAGS_checkpoint_period);
+    rc = db_->cleaner_set_period(db_, FLAGS_cleaner_period);
+    rc = db_->cleaner_set_iterations(db_, FLAGS_cleaner_iterations);
+    db_->change_fsync_log_period(db_, FLAGS_sync_period);
       fprintf(stderr, "open error: %s\n", db_strerror(rc));
     }
 	rc = db_create(&dbh_, db_, 0);
-	rc = db_->txn_begin(db_, 0, &txn, 0);
-	rc = dbh_->open(dbh_, txn, "data.bdb", NULL, DB_BTREE, DB_CREATE|DB_THREAD, 0664);
-	rc = txn->commit(txn, 0);
+    rc = dbh_->set_pagesize(dbh_, FLAGS_node_size);
+    rc = dbh_->set_readpagesize(dbh_, FLAGS_basement_node_size);
+    rc = dbh_->set_compression_method(dbh_, FLAGS_compression_method);
+    rc = dbh_->open(dbh_, NULL, "data.bdb", NULL, DB_BTREE, DB_CREATE, 0664);
   }
 
   void Write(DBFlags flags, Order order, DBState state,
@@ -525,18 +546,28 @@ class Benchmark {
     }
   }
 
+  static int CursorAccumulate(const DBT *key, const DBT *val, void *extra) {
+    Benchmark *bench = static_cast<Benchmark *>(extra);
+    bench->bytes_ += key->size + val->size;
+    bench->FinishedSingleOp();
+    return TOKUDB_CURSOR_CONTINUE;
+  }
+
   void ReadReverse() {
     DB_TXN *txn;
 	DBC *cursor;
 	DBT key, data;
 
 	key.flags = 0; data.flags = 0;
-	db_->txn_begin(db_, NULL, &txn, 0);
+	db_->txn_begin(db_, NULL, &txn, DB_TXN_SNAPSHOT);
 	dbh_->cursor(dbh_, txn, &cursor, 0);
-    while (cursor->c_get(cursor, &key, &data, DB_PREV) == 0) {
-      bytes_ += key.size + data.size;
-      FinishedSingleOp();
+    // prefetch
+    int r = cursor->c_set_bounds(cursor, dbh_->dbt_neg_infty(), dbh_->dbt_pos_infty(), true, 0);
+    assert(r == 0);
+    while (r != DB_NOTFOUND) {
+      r = cursor->c_getf_prev(cursor, 0, &CursorAccumulate, this);
     }
+    assert(r == 0);
 	cursor->c_close(cursor);
 	txn->abort(txn);
   }
@@ -547,33 +578,37 @@ class Benchmark {
 	DBT key, data;
 
 	key.flags = 0; data.flags = 0;
-	db_->txn_begin(db_, NULL, &txn, 0);
+	db_->txn_begin(db_, NULL, &txn, DB_TXN_SNAPSHOT);
 	dbh_->cursor(dbh_, txn, &cursor, 0);
-    while (cursor->c_get(cursor, &key, &data, DB_NEXT) == 0) {
-      bytes_ += key.size + data.size;
-      FinishedSingleOp();
+    // prefetch
+    int r = cursor->c_set_bounds(cursor, dbh_->dbt_neg_infty(), dbh_->dbt_pos_infty(), true, 0);
+    assert(r == 0);
+    while (r != DB_NOTFOUND) {
+      r = cursor->c_getf_next(cursor, 0, &CursorAccumulate, this);
     }
+    assert(r == 0);
 	cursor->c_close(cursor);
 	txn->abort(txn);
   }
 
+  static int DoNothing(const DBT *key __attribute__((unused)), const DBT *value __attribute__((unused)), void *extra __attribute__((unused))) {
+    return 0;
+  }
+
   void ReadRandom() {
     DB_TXN *txn;
-	DBC *cursor;
 	DBT key, data;
     char ckey[100];
 
 	key.flags = 0; data.flags = 0;
 	key.data = ckey;
-	db_->txn_begin(db_, NULL, &txn, 0);
-	dbh_->cursor(dbh_, txn, &cursor, 0);
+	db_->txn_begin(db_, NULL, &txn, DB_TXN_SNAPSHOT);
     for (int i = 0; i < reads_; i++) {
       const int k = rand_.Next() % reads_;
       key.size = snprintf(ckey, sizeof(ckey), "%016d", k);
-	  cursor->c_get(cursor, &key, &data, DB_SET);
+      dbh_->getf_set(dbh_, txn, 0, &key, DoNothing, NULL);
       FinishedSingleOp();
     }
-	cursor->c_close(cursor);
 	txn->abort(txn);
   }
 };
@@ -584,28 +619,36 @@ int main(int argc, char** argv) {
   std::string default_db_path;
   for (int i = 1; i < argc; i++) {
     double d;
-    int n;
+    long long n;
     char junk;
     if (leveldb::Slice(argv[i]).starts_with("--benchmarks=")) {
       FLAGS_benchmarks = argv[i] + strlen("--benchmarks=");
     } else if (sscanf(argv[i], "--compression_ratio=%lf%c", &d, &junk) == 1) {
       FLAGS_compression_ratio = d;
-    } else if (sscanf(argv[i], "--histogram=%d%c", &n, &junk) == 1 &&
+    } else if (sscanf(argv[i], "--histogram=%lld%c", &n, &junk) == 1 &&
                (n == 0 || n == 1)) {
       FLAGS_histogram = n;
-    } else if (sscanf(argv[i], "--num=%d%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--num=%lld%c", &n, &junk) == 1) {
       FLAGS_num = n;
-    } else if (sscanf(argv[i], "--reads=%d%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--reads=%lld%c", &n, &junk) == 1) {
       FLAGS_reads = n;
-    } else if (sscanf(argv[i], "--value_size=%d%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--value_size=%lld%c", &n, &junk) == 1) {
       FLAGS_value_size = n;
-    } else if (sscanf(argv[i], "--cache_size=%d%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--cache_size=%lld%c", &n, &junk) == 1) {
       FLAGS_cache_size = n;
     } else if (strncmp(argv[i], "--db=", 5) == 0) {
       FLAGS_db = argv[i] + 5;
-    } else if (sscanf(argv[i], "--shuffle=%d%c", &n, &junk) == 1 &&
+    } else if (sscanf(argv[i], "--shuffle=%lld%c", &n, &junk) == 1 &&
                (n == 0 || n == 1)) {
       FLAGS_shuffle = n;
+    } else if (sscanf(argv[i], "--node_size=%lld%c", &n, &junk) == 1) {
+      FLAGS_node_size = n;
+    } else if (sscanf(argv[i], "--basement_node_size=%lld%c", &n, &junk) == 1) {
+      FLAGS_basement_node_size = n;
+    } else if (sscanf(argv[i], "--sync_period=%lld%c", &n, &junk) == 1) {
+      FLAGS_sync_period = n;
+    } else if (sscanf(argv[i], "--direct_io=%lld%c", &n, &junk) == 1) {
+      FLAGS_direct_io = (n != 0);
     } else {
       fprintf(stderr, "Invalid flag '%s'\n", argv[i]);
       exit(1);
