@@ -454,7 +454,7 @@ class Benchmark {
 	rc = db_->set_lk_max_locks(db_, 100000);
 	rc = db_->set_lk_max_objects(db_, 100000);
 	if (flags != SYNC)
-		env_opt |= DB_TXN_NOSYNC;
+		env_opt |= DB_TXN_WRITE_NOSYNC;
 	rc =db_->set_flags(db_, env_opt, 1);
 	rc =db_->log_set_config(db_, DB_LOG_AUTO_REMOVE, 1);
 #define TXN_FLAGS	(DB_INIT_LOCK|DB_INIT_LOG|DB_INIT_TXN|DB_INIT_MPOOL|DB_CREATE|DB_THREAD)
