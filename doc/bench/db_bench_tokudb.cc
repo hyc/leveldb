@@ -546,18 +546,28 @@ class Benchmark {
     }
   }
 
+  static int CursorAccumulate(const DBT *key, const DBT *val, void *extra) {
+    Benchmark *bench = static_cast<Benchmark *>(extra);
+    bench->bytes_ += key->size + val->size;
+    bench->FinishedSingleOp();
+    return TOKUDB_CURSOR_CONTINUE;
+  }
+
   void ReadReverse() {
     DB_TXN *txn;
 	DBC *cursor;
 	DBT key, data;
 
 	key.flags = 0; data.flags = 0;
-	db_->txn_begin(db_, NULL, &txn, 0);
+	db_->txn_begin(db_, NULL, &txn, DB_TXN_SNAPSHOT);
 	dbh_->cursor(dbh_, txn, &cursor, 0);
-    while (cursor->c_get(cursor, &key, &data, DB_PREV) == 0) {
-      bytes_ += key.size + data.size;
-      FinishedSingleOp();
+    // prefetch
+    int r = cursor->c_set_bounds(cursor, dbh_->dbt_neg_infty(), dbh_->dbt_pos_infty(), true, 0);
+    assert(r == 0);
+    while (r != DB_NOTFOUND) {
+      r = cursor->c_getf_prev(cursor, 0, &CursorAccumulate, this);
     }
+    assert(r == 0);
 	cursor->c_close(cursor);
 	txn->abort(txn);
   }
@@ -568,33 +578,37 @@ class Benchmark {
 	DBT key, data;
 
 	key.flags = 0; data.flags = 0;
-	db_->txn_begin(db_, NULL, &txn, 0);
+	db_->txn_begin(db_, NULL, &txn, DB_TXN_SNAPSHOT);
 	dbh_->cursor(dbh_, txn, &cursor, 0);
-    while (cursor->c_get(cursor, &key, &data, DB_NEXT) == 0) {
-      bytes_ += key.size + data.size;
-      FinishedSingleOp();
+    // prefetch
+    int r = cursor->c_set_bounds(cursor, dbh_->dbt_neg_infty(), dbh_->dbt_pos_infty(), true, 0);
+    assert(r == 0);
+    while (r != DB_NOTFOUND) {
+      r = cursor->c_getf_next(cursor, 0, &CursorAccumulate, this);
     }
+    assert(r == 0);
 	cursor->c_close(cursor);
 	txn->abort(txn);
   }
 
+  static int DoNothing(const DBT *key __attribute__((unused)), const DBT *value __attribute__((unused)), void *extra __attribute__((unused))) {
+    return 0;
+  }
+
   void ReadRandom() {
     DB_TXN *txn;
-	DBC *cursor;
 	DBT key, data;
     char ckey[100];
 
 	key.flags = 0; data.flags = 0;
 	key.data = ckey;
-	db_->txn_begin(db_, NULL, &txn, 0);
-	dbh_->cursor(dbh_, txn, &cursor, 0);
+	db_->txn_begin(db_, NULL, &txn, DB_TXN_SNAPSHOT);
     for (int i = 0; i < reads_; i++) {
       const int k = rand_.Next() % reads_;
       key.size = snprintf(ckey, sizeof(ckey), "%016d", k);
-	  cursor->c_get(cursor, &key, &data, DB_SET);
+      dbh_->getf_set(dbh_, txn, 0, &key, DoNothing, NULL);
       FinishedSingleOp();
     }
-	cursor->c_close(cursor);
 	txn->abort(txn);
   }
 };
