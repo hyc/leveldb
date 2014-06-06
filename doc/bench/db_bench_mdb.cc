@@ -90,6 +90,9 @@ static bool FLAGS_metasync = true;
 // If true, use writable mmap
 static bool FLAGS_writemap = true;
 
+// The Linux kernel does readahead by default
+static bool FLAGS_readahead = true;
+
 // Use the db with the following name.
 static const char* FLAGS_db = NULL;
 
@@ -473,6 +476,8 @@ class Benchmark {
 	if (FLAGS_cleanmem)
 		env_opt |= MDB_CLEANMEM;
 #endif
+	if (!FLAGS_readahead)
+		env_opt |= MDB_NORDAHEAD;
 
     // Create tuning options and open the database
 	rc = mdb_env_create(&db_);
@@ -646,6 +651,9 @@ int main(int argc, char** argv) {
     } else if (sscanf(argv[i], "--shuffle=%d%c", &n, &junk) == 1 &&
                (n == 0 || n == 1)) {
       FLAGS_shuffle = n;
+    } else if (sscanf(argv[i], "--readahead=%d%c", &n, &junk) == 1 &&
+               (n == 0 || n == 1)) {
+      FLAGS_readahead = n;
     } else {
       fprintf(stderr, "Invalid flag '%s'\n", argv[i]);
       exit(1);
