@@ -631,6 +631,9 @@ int main(int argc, char** argv) {
     } else if (sscanf(argv[i], "--histogram=%lld%c", &n, &junk) == 1 &&
                (n == 0 || n == 1)) {
       FLAGS_histogram = n;
+    } else if (sscanf(argv[i], "--use_existing_db=%d%c", &n, &junk) == 1 &&
+               (n == 0 || n == 1)) {
+      FLAGS_use_existing_db = n;
     } else if (sscanf(argv[i], "--num=%lld%c", &n, &junk) == 1) {
       FLAGS_num = n;
     } else if (sscanf(argv[i], "--reads=%lld%c", &n, &junk) == 1) {

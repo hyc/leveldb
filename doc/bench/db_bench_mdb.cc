@@ -630,6 +630,9 @@ int main(int argc, char** argv) {
     } else if (sscanf(argv[i], "--histogram=%d%c", &n, &junk) == 1 &&
                (n == 0 || n == 1)) {
       FLAGS_histogram = n;
+    } else if (sscanf(argv[i], "--use_existing_db=%d%c", &n, &junk) == 1 &&
+               (n == 0 || n == 1)) {
+      FLAGS_use_existing_db = n;
     } else if (sscanf(argv[i], "--metasync=%d%c", &n, &junk) == 1 &&
                (n == 0 || n == 1)) {
       FLAGS_metasync = n;

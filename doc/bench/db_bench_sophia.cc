@@ -82,12 +82,6 @@ static bool FLAGS_use_existing_db = false;
 // If true, we allow batch writes to occur
 static bool FLAGS_transaction = true;
 
-// If false, skip sync of meta pages on synchronous writes
-static bool FLAGS_metasync = true;
-
-// If true, use writable mmap
-static bool FLAGS_writemap = true;
-
 // Use the db with the following name.
 static const char* FLAGS_db = NULL;
 
@@ -594,12 +588,9 @@ int main(int argc, char** argv) {
     } else if (sscanf(argv[i], "--histogram=%d%c", &n, &junk) == 1 &&
                (n == 0 || n == 1)) {
       FLAGS_histogram = n;
-    } else if (sscanf(argv[i], "--metasync=%d%c", &n, &junk) == 1 &&
+    } else if (sscanf(argv[i], "--use_existing_db=%d%c", &n, &junk) == 1 &&
                (n == 0 || n == 1)) {
-      FLAGS_metasync = n;
-    } else if (sscanf(argv[i], "--writemap=%d%c", &n, &junk) == 1 &&
-               (n == 0 || n == 1)) {
-      FLAGS_writemap = n;
+      FLAGS_use_existing_db = n;
     } else if (sscanf(argv[i], "--num=%d%c", &n, &junk) == 1) {
       FLAGS_num = n;
     } else if (sscanf(argv[i], "--batch=%d%c", &n, &junk) == 1) {
