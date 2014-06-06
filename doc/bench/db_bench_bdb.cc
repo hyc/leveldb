@@ -347,6 +347,8 @@ class Benchmark {
         name = Slice(benchmarks, sep - benchmarks);
         benchmarks = sep + 1;
       }
+	  if (name.starts_with(Slice("read")) && !db_)
+		Open(NONE);
 
 	  num_ = FLAGS_num;
       Start();
@@ -446,7 +448,7 @@ class Benchmark {
 	sprintf(cmd, "mkdir -p %s", file_name);
 	system(cmd);
 
-	int env_opt = DB_REGION_INIT;
+	int env_opt = DB_REGION_INIT, txn_flags;
 
     // Create tuning options and open the database
 	rc = db_env_create(&db_, 0);
@@ -457,10 +459,13 @@ class Benchmark {
 		env_opt |= DB_TXN_WRITE_NOSYNC;
 	rc =db_->set_flags(db_, env_opt, 1);
 	rc =db_->log_set_config(db_, DB_LOG_AUTO_REMOVE, 1);
-#define TXN_FLAGS	(DB_INIT_LOCK|DB_INIT_LOG|DB_INIT_TXN|DB_INIT_MPOOL|DB_CREATE|DB_THREAD)
-	rc = db_->open(db_, file_name, TXN_FLAGS, 0664);
+	txn_flags = DB_INIT_LOCK|DB_INIT_LOG|DB_INIT_TXN|DB_INIT_MPOOL|DB_THREAD;
+	if (!FLAGS_use_existing_db)
+		txn_flags |= DB_CREATE;
+	rc = db_->open(db_, file_name, txn_flags, 0664);
 	if (rc) {
       fprintf(stderr, "open error: %s\n", db_strerror(rc));
+	  exit(1);
     }
 	rc = db_create(&dbh_, db_, 0);
 	rc = dbh_->open(dbh_, NULL, "data.bdb", NULL, DB_BTREE, DB_AUTO_COMMIT|DB_CREATE|DB_THREAD, 0664);
@@ -483,8 +488,10 @@ class Benchmark {
 		  db_ = NULL;
 		  dbh_ = NULL;
 	  }
-      Open(flags);
-    } else {
+    }
+	if (!db_)
+		Open(flags);
+	if (state != FRESH) {
 	db_->txn_checkpoint(db_,0,0,DB_FORCE);
     }
 

@@ -348,6 +348,8 @@ class Benchmark {
         name = Slice(benchmarks, sep - benchmarks);
         benchmarks = sep + 1;
       }
+	  if (name.starts_with(Slice("read")) && !db_)
+		Open(NONE);
 
 	  num_ = FLAGS_num;
       Start();

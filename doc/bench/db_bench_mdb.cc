@@ -356,6 +356,8 @@ class Benchmark {
         name = Slice(benchmarks, sep - benchmarks);
         benchmarks = sep + 1;
       }
+	  if (name.starts_with(Slice("read")) && !db_)
+		Open(NONE);
 
 	  num_ = FLAGS_num;
       Start();
@@ -507,8 +509,9 @@ class Benchmark {
 		  system(cmd);
 		  db_ = NULL;
 	  }
-      Open(flags);
     }
+	if (!db_)
+      Open(flags);
 	if (order == RANDOM && shuff)
 	  rand_.Shuffle(shuff, num_entries);
 
@@ -600,6 +603,7 @@ class Benchmark {
 	MDB_val key, data;
     char ckey[100];
 	key.mv_data = ckey;
+
 	mdb_txn_begin(db_, NULL, MDB_RDONLY, &txn);
 	mdb_cursor_open(txn, dbi_, &cursor);
     for (int i = 0; i < reads_; i++) {

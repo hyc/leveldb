@@ -360,6 +360,8 @@ class Benchmark {
         name = Slice(benchmarks, sep - benchmarks);
         benchmarks = sep + 1;
       }
+	  if (name.starts_with(Slice("read")) && !db_)
+		Open(NONE);
 
 	  num_ = FLAGS_num;
       Start();
@@ -459,7 +461,7 @@ class Benchmark {
 	sprintf(cmd, "mkdir -p %s", file_name);
 	system(cmd);
 
-	int env_opt = 0;
+	int env_opt = 0, txn_flags;
 
     db_env_set_direct_io(FLAGS_direct_io);
     db_env_set_num_bucket_mutexes(FLAGS_num_bucket_mutexes);
@@ -469,8 +471,10 @@ class Benchmark {
 	if (flags != SYNC)
 		env_opt |= DB_TXN_NOSYNC;
 	rc =db_->set_flags(db_, env_opt, 1);
-#define TXN_FLAGS	(DB_INIT_LOCK|DB_INIT_LOG|DB_INIT_TXN|DB_INIT_MPOOL|DB_CREATE|DB_THREAD|DB_PRIVATE)
-	rc = db_->open(db_, file_name, TXN_FLAGS, 0664);
+	txn_flags =	DB_INIT_LOCK|DB_INIT_LOG|DB_INIT_TXN|DB_INIT_MPOOL|DB_THREAD|DB_PRIVATE;
+	if (!FLAGS_use_existing_db)
+		txn_flags |= DB_CREATE;
+	rc = db_->open(db_, file_name, txn_flags, 0664);
 	if (rc) {
     rc = db_->set_lk_max_memory(db_, FLAGS_lk_max_memory);
     rc = db_->set_cachesize(db_, FLAGS_cache_size / (1 << 30), FLAGS_cache_size % (1 << 30), 1);
@@ -479,6 +483,7 @@ class Benchmark {
     rc = db_->cleaner_set_iterations(db_, FLAGS_cleaner_iterations);
     db_->change_fsync_log_period(db_, FLAGS_sync_period);
       fprintf(stderr, "open error: %s\n", db_strerror(rc));
+	  exit(1);
     }
 	rc = db_create(&dbh_, db_, 0);
     rc = dbh_->set_pagesize(dbh_, FLAGS_node_size);
@@ -631,7 +636,7 @@ int main(int argc, char** argv) {
     } else if (sscanf(argv[i], "--histogram=%lld%c", &n, &junk) == 1 &&
                (n == 0 || n == 1)) {
       FLAGS_histogram = n;
-    } else if (sscanf(argv[i], "--use_existing_db=%d%c", &n, &junk) == 1 &&
+    } else if (sscanf(argv[i], "--use_existing_db=%lld%c", &n, &junk) == 1 &&
                (n == 0 || n == 1)) {
       FLAGS_use_existing_db = n;
     } else if (sscanf(argv[i], "--num=%lld%c", &n, &junk) == 1) {

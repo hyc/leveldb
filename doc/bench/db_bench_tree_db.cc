@@ -344,6 +344,8 @@ class Benchmark {
         name = Slice(benchmarks, sep - benchmarks);
         benchmarks = sep + 1;
       }
+	  if (name.starts_with(Slice("read")) && !db_)
+		Open(false);
 
 	  num_ = FLAGS_num;
       Start();
@@ -439,10 +441,11 @@ class Benchmark {
              db_num_);
 
     // Create tuning options and open the database
-    int open_options = kyotocabinet::PolyDB::OWRITER |
-                       kyotocabinet::PolyDB::OCREATE;
+    int open_options = kyotocabinet::PolyDB::OWRITER;
     int tune_options = kyotocabinet::TreeDB::TSMALL |
         kyotocabinet::TreeDB::TLINEAR;
+	if (!FLAGS_use_existing_db)
+      open_options |= kyotocabinet::PolyDB::OCREATE;
     if (FLAGS_compression) {
       tune_options |= kyotocabinet::TreeDB::TCOMPRESS;
       db_->tune_compressor(&comp_);
@@ -456,6 +459,7 @@ class Benchmark {
     }
     if (!db_->open(file_name, open_options)) {
       fprintf(stderr, "open error: %s\n", db_->error().name());
+	  exit(1);
     }
   }
 
