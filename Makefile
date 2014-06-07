@@ -54,7 +54,13 @@ TESTS = \
 	write_batch_test
 
 PROGRAMS = db_bench leveldbutil $(TESTS)
-BENCHMARKS = db_bench db_bench_sqlite3 db_bench_tree_db db_bench_mdb db_bench_bdb db_bench_sophia db_bench_tokudb
+BENCHMARKS = db_bench db_bench_sqlite3 db_bench_tree_db db_bench_mdb \
+	db_bench_bdb db_bench_sophia db_bench_tokudb \
+	db_bench_basho db_bench_hyper db_bench_rocksdb
+
+BASHO = ../basho_leveldb
+HYPER = ../HyperLevelDB
+ROCKSDB = ../rocksdb
 
 LIBRARY = libleveldb.a
 MEMENVLIBRARY = libmemenv.a
@@ -108,6 +114,25 @@ clean-bench:
 
 db_bench: db/db_bench.o $(LIBOBJECTS) $(TESTUTIL)
 	$(CXX) $(LDFLAGS) db/db_bench.o $(LIBOBJECTS) $(TESTUTIL) -o $@ $(LIBS)
+
+db_bench_basho: doc/bench/db_bench_basho.o $(BASHO)/libleveldb.a $(BASHO)/$(TESTUTIL)
+	$(CXX) $(LDFLAGS) doc/bench/db_bench_basho.o $(BASHO)/libleveldb.a $(BASHO)/$(TESTUTIL) -o $@ $(LIBS) -lrt
+
+doc/bench/db_bench_basho.o: doc/bench/db_bench_basho.cc
+	$(CXX) -I$(BASHO) -I$(BASHO)/include $(CXXFLAGS) -c $< -o $@
+	
+db_bench_hyper: doc/bench/db_bench_hyper.o $(HYPER)/.libs/libhyperleveldb.a $(HYPER)/$(TESTUTIL)
+	$(CXX) $(LDFLAGS) doc/bench/db_bench_hyper.o $(HYPER)/.libs/libhyperleveldb.a $(HYPER)/$(TESTUTIL) -o $@ $(LIBS) -lrt
+
+doc/bench/db_bench_hyper.o: doc/bench/db_bench_hyper.cc
+	$(CXX) -I$(HYPER) -I$(HYPER)/include $(CXXFLAGS) -DHAVE_CONFIG_H -c $< -o $@
+
+db_bench_rocksdb: doc/bench/db_bench_rocksdb.o $(ROCKSDB)/librocksdb.a $(ROCKSDB)/$(TESTUTIL)
+	$(CXX) $(LDFLAGS) doc/bench/db_bench_rocksdb.o $(ROCKSDB)/librocksdb.a $(ROCKSDB)/$(TESTUTIL) -o $@ $(LIBS) -lrt
+
+doc/bench/db_bench_rocksdb.o: doc/bench/db_bench_rocksdb.cc
+	make -C $(ROCKSDB) static_lib
+	$(CXX) -std=c++11 -I$(ROCKSDB) -I$(ROCKSDB)/include -DROCKSDB_PLATFORM_POSIX -DROCKSDB_ATOMIC_PRESENT -DROCKSDB_FALLOCATE_PRESENT $(CXXFLAGS) -c $< -o $@
 
 db_bench_sqlite3: doc/bench/db_bench_sqlite3.o $(LIBRARY) $(TESTUTIL)
 	$(CXX) doc/bench/db_bench_sqlite3.o $(LIBRARY) $(TESTUTIL) -o $@ $(LDFLAGS) /usr/local/lib/libsqlite3.a -ldl
