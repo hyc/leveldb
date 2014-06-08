@@ -1,25 +1,26 @@
 export TEST_TMPDIR=/home/software/leveldb/test
+NUM=400000000
 atop -P CPU,DSK,MEM,PRC 5 &
 rm -rf $TEST_TMPDIR/db*
-./db_bench_sophia --num=400000000
+./db_bench_sophia --num=$NUM
 du $TEST_TMPDIR
 rm -rf $TEST_TMPDIR/db*
-./db_bench_tokudb --num=400000000 --cache_size=134217728
+./db_bench_tokudb --num=$NUM
 du $TEST_TMPDIR
 rm -rf $TEST_TMPDIR/db*
-./db_bench --num=400000000 --cache_size=134217728
+./db_bench --num=$NUM
 du $TEST_TMPDIR
 rm -rf $TEST_TMPDIR/db*
-./db_bench_mdb --num=400000000 --writemap=1 --metasync=0
+./db_bench_mdb --num=$NUM --writemap=1 --metasync=0
 du $TEST_TMPDIR
 rm -rf $TEST_TMPDIR/db*
-#db_bench_bdb --num=400000000 --cache_size=134217728
+#db_bench_bdb --num=$NUM --cache_size=134217728
 #du $TEST_TMPDIR
 #rm -rf $TEST_TMPDIR/db*
-#db_bench_sqlite3 --num=400000000
+#db_bench_sqlite3 --num=$NUM
 #du $TEST_TMPDIR
 #rm -rf $TEST_TMPDIR/db*
-#db_bench_tree_db --num=400000000 --cache_size=134217728
+#db_bench_tree_db --num=$NUM --cache_size=134217728
 #du $TEST_TMPDIR
 #rm -rf $TEST_TMPDIR/db*
 kill %1
