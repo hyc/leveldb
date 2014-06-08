@@ -7,7 +7,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <lmdb.h>
+#include "port/port.h"
 #include "util/histogram.h"
+#include "util/mutexlock.h"
 #include "util/random.h"
 #include "util/testutil.h"
 
@@ -59,6 +61,9 @@ static int FLAGS_num = 1000000;
 static int FLAGS_reads = -1;
 
 static int FLAGS_cleanmem = 0;
+
+// Number of concurrent threads to run.
+static int FLAGS_threads = 1;
 
 // Size of each value
 static int FLAGS_value_size = 100;
@@ -150,26 +155,179 @@ static Slice TrimSpace(Slice s) {
   return Slice(s.data() + start, limit - start);
 }
 
+static void AppendWithSpace(std::string* str, Slice msg) {
+  if (msg.empty()) return;
+  if (!str->empty()) {
+    str->push_back(' ');
+  }
+  str->append(msg.data(), msg.size());
+}
+
+class Stats {
+ private:
+  double start_;
+  double finish_;
+  double seconds_;
+  int done_;
+  int next_report_;
+  int64_t bytes_;
+  double last_op_finish_;
+  Histogram hist_;
+  std::string message_;
+
+ public:
+  Stats() { Start(); }
+
+  void Start() {
+    next_report_ = 100;
+    last_op_finish_ = start_;
+    hist_.Clear();
+    done_ = 0;
+    bytes_ = 0;
+    seconds_ = 0;
+    start_ = Env::Default()->NowMicros();
+    finish_ = start_;
+    message_.clear();
+  }
+
+  void Merge(const Stats& other) {
+    hist_.Merge(other.hist_);
+    done_ += other.done_;
+    bytes_ += other.bytes_;
+    seconds_ += other.seconds_;
+    if (other.start_ < start_) start_ = other.start_;
+    if (other.finish_ > finish_) finish_ = other.finish_;
+
+    // Just keep the messages from one thread
+    if (message_.empty()) message_ = other.message_;
+  }
+
+  void Stop() {
+    finish_ = Env::Default()->NowMicros();
+    seconds_ = (finish_ - start_) * 1e-6;
+  }
+
+  void AddMessage(Slice msg) {
+    AppendWithSpace(&message_, msg);
+  }
+
+  void FinishedSingleOp() {
+    if (FLAGS_histogram) {
+      double now = Env::Default()->NowMicros();
+      double micros = now - last_op_finish_;
+      hist_.Add(micros);
+      if (micros > 20000) {
+        fprintf(stderr, "long op: %.1f micros%30s\r", micros, "");
+        fflush(stderr);
+      }
+      last_op_finish_ = now;
+    }
+
+    done_++;
+    if (done_ >= next_report_) {
+      if      (next_report_ < 1000)   next_report_ += 100;
+      else if (next_report_ < 5000)   next_report_ += 500;
+      else if (next_report_ < 10000)  next_report_ += 1000;
+      else if (next_report_ < 50000)  next_report_ += 5000;
+      else if (next_report_ < 100000) next_report_ += 10000;
+      else if (next_report_ < 500000) next_report_ += 50000;
+      else                            next_report_ += 100000;
+      fprintf(stderr, "... finished %d ops%30s\r", done_, "");
+      fflush(stderr);
+    }
+  }
+
+  void AddBytes(int64_t n) {
+    bytes_ += n;
+  }
+
+  void Report(const Slice& name) {
+    // Pretend at least one op was done in case we are running a benchmark
+    // that does not call FinishedSingleOp().
+    if (done_ < 1) done_ = 1;
+
+    std::string extra;
+    if (bytes_ > 0) {
+      // Rate is computed on actual elapsed time, not the sum of per-thread
+      // elapsed times.
+      double elapsed = (finish_ - start_) * 1e-6;
+      char rate[100];
+      snprintf(rate, sizeof(rate), "%6.1f MB/s",
+               (bytes_ / 1048576.0) / elapsed);
+      extra = rate;
+    }
+    AppendWithSpace(&extra, message_);
+    double elapsed = (finish_ - start_) * 1e-6;
+    double throughput = (double)done_/elapsed;
+
+    fprintf(stdout, "%-12s : %11.3f micros/op %ld ops/sec;%s%s\n",
+            name.ToString().c_str(),
+            seconds_ * 1e6 / done_,
+			(long)throughput,
+            (extra.empty() ? "" : " "),
+            extra.c_str());
+    if (FLAGS_histogram) {
+      fprintf(stdout, "Microseconds per op:\n%s\n", hist_.ToString().c_str());
+    }
+    fflush(stdout);
+  }
+};
+
+// State shared by all concurrent executions of the same benchmark.
+struct SharedState {
+  port::Mutex mu;
+  port::CondVar cv;
+  int total;
+
+  // Each thread goes through the following states:
+  //    (1) initializing
+  //    (2) waiting for others to be initialized
+  //    (3) running
+  //    (4) done
+
+  int num_initialized;
+  int num_done;
+  bool start;
+
+  SharedState() : cv(&mu) { }
+};
+
+// Per-thread state for concurrent executions of the same benchmark.
+struct ThreadState {
+  int tid;             // 0..n-1 when running in n threads
+  Random rand;         // Has different seeds for different threads
+  Stats stats;
+  SharedState* shared;
+
+  ThreadState(int index)
+      : tid(index),
+        rand(1000 + index) {
+  }
+};
 }  // namespace
 
 class Benchmark {
+ public:
+  enum Order {
+    SEQUENTIAL,
+    RANDOM
+  };
+  enum DBFlags {
+    NONE = 0,
+	SYNC,
+	INT
+  };
+
  private:
   MDB_env *db_;
   MDB_dbi dbi_;
   int db_num_;
   int num_;
+  int value_size_;
+  int entries_per_batch_;
   int reads_;
-  double start_;
-  double last_op_finish_;
-  int64_t bytes_;
-  std::string message_;
-  Histogram hist_;
-  RandomGenerator gen_;
-  Random rand_;
-
-  // State kept for progress messages
-  int done_;
-  int next_report_;     // When to report next
+  DBFlags dbflags_;
+  Order write_order_;
 
   void PrintHeader() {
     const int kKeySize = 16;
@@ -235,93 +393,14 @@ class Benchmark {
 #endif
   }
 
-  void Start() {
-    start_ = Env::Default()->NowMicros() * 1e-6;
-    bytes_ = 0;
-    message_.clear();
-    last_op_finish_ = start_;
-    hist_.Clear();
-    done_ = 0;
-    next_report_ = 100;
-  }
-
-  void FinishedSingleOp() {
-    if (FLAGS_histogram) {
-      double now = Env::Default()->NowMicros() * 1e-6;
-      double micros = (now - last_op_finish_) * 1e6;
-      hist_.Add(micros);
-      if (micros > 20000) {
-        fprintf(stderr, "long op: %.1f micros%30s\r", micros, "");
-        fflush(stderr);
-      }
-      last_op_finish_ = now;
-    }
-
-    done_++;
-    if (done_ >= next_report_) {
-      if      (next_report_ < 1000)   next_report_ += 100;
-      else if (next_report_ < 5000)   next_report_ += 500;
-      else if (next_report_ < 10000)  next_report_ += 1000;
-      else if (next_report_ < 50000)  next_report_ += 5000;
-      else if (next_report_ < 100000) next_report_ += 10000;
-      else if (next_report_ < 500000) next_report_ += 50000;
-      else                            next_report_ += 100000;
-      fprintf(stderr, "... finished %d ops%30s\r", done_, "");
-      fflush(stderr);
-    }
-  }
-
-  void Stop(const Slice& name) {
-    double finish = Env::Default()->NowMicros() * 1e-6;
-
-    // Pretend at least one op was done in case we are running a benchmark
-    // that does not call FinishedSingleOp().
-    if (done_ < 1) done_ = 1;
-
-    if (bytes_ > 0) {
-      char rate[100];
-      snprintf(rate, sizeof(rate), "%6.1f MB/s",
-               (bytes_ / 1048576.0) / (finish - start_));
-      if (!message_.empty()) {
-        message_  = std::string(rate) + " " + message_;
-      } else {
-        message_ = rate;
-      }
-    }
-
-    fprintf(stdout, "%-12s : %11.3f micros/op;%s%s\n",
-            name.ToString().c_str(),
-            (finish - start_) * 1e6 / done_,
-            (message_.empty() ? "" : " "),
-            message_.c_str());
-    if (FLAGS_histogram) {
-      fprintf(stdout, "Microseconds per op:\n%s\n", hist_.ToString().c_str());
-    }
-    fflush(stdout);
-  }
-
  public:
-  enum Order {
-    SEQUENTIAL,
-    RANDOM
-  };
-  enum DBState {
-    FRESH,
-    EXISTING
-  };
-  enum DBFlags {
-    NONE = 0,
-  	SYNC,
-	INT
-  };
-
   Benchmark()
   : db_(NULL),
     db_num_(0),
     num_(FLAGS_num),
-    reads_(FLAGS_reads < 0 ? FLAGS_num : FLAGS_reads),
-    bytes_(0),
-    rand_(301) {
+	value_size_(FLAGS_value_size),
+	entries_per_batch_(1),
+    reads_(FLAGS_reads < 0 ? FLAGS_num : FLAGS_reads) {
     std::vector<std::string> files;
     std::string test_dir;
     Env::Default()->GetTestDirectory(&test_dir);
@@ -356,98 +435,211 @@ class Benchmark {
         name = Slice(benchmarks, sep - benchmarks);
         benchmarks = sep + 1;
       }
-	  if (name.starts_with(Slice("read")) && !db_)
-		Open(NONE);
 
 	  num_ = FLAGS_num;
-      Start();
+	  reads_ = (FLAGS_reads < 0 ? FLAGS_num : FLAGS_reads);
+	  value_size_ = FLAGS_value_size;
+	  entries_per_batch_ = 1;
 
-      bool known = true, writer = false;
-	  DBFlags flags = NONE;
+	  void (Benchmark::*method)(ThreadState*) = NULL;
+	  bool fresh_db = false;
+	  int num_threads = FLAGS_threads;
+
+	  dbflags_ = NONE;
       if (name == Slice("fillseq")) {
-	writer = true;
-        Write(flags, SEQUENTIAL, FRESH, num_, FLAGS_value_size, 1);
+		fresh_db = true;
+		write_order_ = SEQUENTIAL;
+		method = &Benchmark::Write;
       } else if (name == Slice("fillseqbatch")) {
-	writer = true;
-        Write(flags, SEQUENTIAL, FRESH, num_, FLAGS_value_size, FLAGS_batch);
+		fresh_db = true;
+		write_order_ = SEQUENTIAL;
+		entries_per_batch_ = FLAGS_batch;
+		method = &Benchmark::Write;
       } else if (name == Slice("fillrandom")) {
-	writer = true;
-        Write(flags, RANDOM, FRESH, num_, FLAGS_value_size, 1);
+		fresh_db = true;
+		write_order_ = RANDOM;
+		method = &Benchmark::Write;
       } else if (name == Slice("fillrandbatch")) {
-	writer = true;
-        Write(flags, RANDOM, FRESH, num_, FLAGS_value_size, FLAGS_batch);
+		fresh_db = true;
+		write_order_ = RANDOM;
+		entries_per_batch_ = FLAGS_batch;
+		method = &Benchmark::Write;
       } else if (name == Slice("fillrandint")) {
-	writer = true;
-	  	flags = INT;
-        Write(flags, RANDOM, FRESH, num_, FLAGS_value_size, 1);
+		fresh_db = true;
+		write_order_ = RANDOM;
+		dbflags_ = INT;
+		method = &Benchmark::Write;
       } else if (name == Slice("fillrandibatch")) {
-	writer = true;
-	  	flags = INT;
-        Write(flags, RANDOM, FRESH, num_, FLAGS_value_size, FLAGS_batch);
+		fresh_db = true;
+		write_order_ = RANDOM;
+		dbflags_ = INT;
+		entries_per_batch_ = FLAGS_batch;
+		method = &Benchmark::Write;
       } else if (name == Slice("overwrite")) {
-	writer = true;
-        Write(flags, RANDOM, EXISTING, num_, FLAGS_value_size, 1);
+		write_order_ = RANDOM;
+		method = &Benchmark::Write;
       } else if (name == Slice("overwritebatch")) {
-	writer = true;
-        Write(flags, RANDOM, EXISTING, num_, FLAGS_value_size, FLAGS_batch);
+		write_order_ = RANDOM;
+		entries_per_batch_ = FLAGS_batch;
+		method = &Benchmark::Write;
       } else if (name == Slice("fillrandsync")) {
-	writer = true;
-        flags = SYNC;
+		fresh_db = true;
 #if 1
 		num_ /= 1000;
 		if (num_<10) num_=10;
 #endif
-        Write(flags, RANDOM, FRESH, num_, FLAGS_value_size, 1);
+		write_order_ = RANDOM;
+        dbflags_ = SYNC;
+		method = &Benchmark::Write;
       } else if (name == Slice("fillseqsync")) {
-	writer = true;
-        flags = SYNC;
+		fresh_db = true;
 #if 1
 		num_ /= 1000;
 		if (num_<10) num_=10;
 #endif
-        Write(flags, SEQUENTIAL, FRESH, num_, FLAGS_value_size, 1);
+		write_order_ = SEQUENTIAL;
+        dbflags_ = SYNC;
+		method = &Benchmark::Write;
       } else if (name == Slice("fillrand100K")) {
-	writer = true;
-        Write(flags, RANDOM, FRESH, num_ / 1000, 100 * 1000, 1);
+		fresh_db = true;
+		write_order_ = RANDOM;
+		num_ /= 1000;
+		value_size_ = 100 * 1000;
+		method = &Benchmark::Write;
       } else if (name == Slice("fillseq100K")) {
-	writer = true;
-        Write(flags, SEQUENTIAL, FRESH, num_ / 1000, 100 * 1000, 1);
+		fresh_db = true;
+		write_order_ = SEQUENTIAL;
+		num_ /= 1000;
+		value_size_ = 100 * 1000;
+		method = &Benchmark::Write;
       } else if (name == Slice("readseq")) {
-        ReadSequential();
+        method = &Benchmark::ReadSequential;
       } else if (name == Slice("readreverse")) {
-        ReadReverse();
+        method = &Benchmark::ReadReverse;
       } else if (name == Slice("readrandom")) {
-        ReadRandom();
+        method = &Benchmark::ReadRandom;
       } else if (name == Slice("readrand100K")) {
-        int n = reads_;
         reads_ /= 1000;
-        ReadRandom();
-        reads_ = n;
+        method = &Benchmark::ReadRandom;
       } else if (name == Slice("readseq100K")) {
-        int n = reads_;
         reads_ /= 1000;
-        ReadSequential();
-        reads_ = n;
+        method = &Benchmark::ReadSequential;
+      } else if (name == Slice("readwhilewriting")) {
+	    num_threads++;
+        method = &Benchmark::ReadWhileWriting;
       } else {
-        known = false;
         if (name != Slice()) {  // No error message for empty name
           fprintf(stderr, "unknown benchmark '%s'\n", name.ToString().c_str());
         }
       }
-      if (known) {
-        Stop(name);
-	if (writer) {
-	  char cmd[200];
-	  std::string test_dir;
-	  Env::Default()->GetTestDirectory(&test_dir);
-	  sprintf(cmd, "du %s", test_dir.c_str());
-	  system(cmd);
-	}
+
+    if (fresh_db) {
+      if (FLAGS_use_existing_db) {
+        fprintf(stdout, "%-12s : skipped (--use_existing_db is true)\n",
+		        name.ToString().c_str());
+		method = NULL;
       }
+	  if (db_) {
+		  char cmd[200];
+		  sprintf(cmd, "rm -rf %s*", FLAGS_db);
+		  mdb_env_close(db_);
+		  system(cmd);
+		  db_ = NULL;
+	  }
+    }
+	if (!db_)
+		Open(dbflags_);
+
+	if (method != NULL) {
+		RunBenchmark(num_threads, name, method);
+		if (method == &Benchmark::Write) {
+		  char cmd[200];
+		  std::string test_dir;
+		  Env::Default()->GetTestDirectory(&test_dir);
+		  sprintf(cmd, "du %s", test_dir.c_str());
+		  system(cmd);
+		}
+    }
     }
   }
 
  private:
+  struct ThreadArg {
+    Benchmark* bm;
+    SharedState* shared;
+    ThreadState* thread;
+    void (Benchmark::*method)(ThreadState*);
+  };
+
+  static void ThreadBody(void* v) {
+    ThreadArg* arg = reinterpret_cast<ThreadArg*>(v);
+    SharedState* shared = arg->shared;
+    ThreadState* thread = arg->thread;
+    {
+      MutexLock l(&shared->mu);
+      shared->num_initialized++;
+      if (shared->num_initialized >= shared->total) {
+        shared->cv.SignalAll();
+      }
+      while (!shared->start) {
+        shared->cv.Wait();
+      }
+    }
+
+    thread->stats.Start();
+    (arg->bm->*(arg->method))(thread);
+    thread->stats.Stop();
+
+    {
+      MutexLock l(&shared->mu);
+      shared->num_done++;
+      if (shared->num_done >= shared->total) {
+        shared->cv.SignalAll();
+      }
+    }
+  }
+
+  void RunBenchmark(int n, Slice name,
+                    void (Benchmark::*method)(ThreadState*)) {
+    SharedState shared;
+    shared.total = n;
+    shared.num_initialized = 0;
+    shared.num_done = 0;
+    shared.start = false;
+
+    ThreadArg* arg = new ThreadArg[n];
+    for (int i = 0; i < n; i++) {
+      arg[i].bm = this;
+      arg[i].method = method;
+      arg[i].shared = &shared;
+      arg[i].thread = new ThreadState(i);
+      arg[i].thread->shared = &shared;
+      Env::Default()->StartThread(ThreadBody, &arg[i]);
+    }
+
+    shared.mu.Lock();
+    while (shared.num_initialized < n) {
+      shared.cv.Wait();
+    }
+
+    shared.start = true;
+    shared.cv.SignalAll();
+    while (shared.num_done < n) {
+      shared.cv.Wait();
+    }
+    shared.mu.Unlock();
+
+    for (int i = 1; i < n; i++) {
+      arg[0].thread->stats.Merge(arg[i].thread->stats);
+    }
+    arg[0].thread->stats.Report(name);
+
+    for (int i = 0; i < n; i++) {
+      delete arg[i].thread;
+    }
+    delete[] arg;
+  }
+
     void Open(DBFlags flags) {
     assert(db_ == NULL);
 	int rc;
@@ -494,128 +686,165 @@ class Benchmark {
 	rc = mdb_txn_commit(txn);
   }
 
-  void Write(DBFlags flags, Order order, DBState state,
-             int num_entries, int value_size, int entries_per_batch) {
-    // Create new database if state == FRESH
-    if (state == FRESH) {
-      if (FLAGS_use_existing_db) {
-        message_ = "skipping (--use_existing_db is true)";
-        return;
-      }
-	  if (db_) {
-		  char cmd[200];
-		  sprintf(cmd, "rm -rf %s*", FLAGS_db);
-		  mdb_env_close(db_);
-		  system(cmd);
-		  db_ = NULL;
-	  }
-    }
-	if (!db_)
-      Open(flags);
-	if (order == RANDOM && shuff)
-	  rand_.Shuffle(shuff, num_entries);
-
-    Start();  // Do not count time taken to destroy/open
-
-    if (num_entries != num_) {
+  void Write(ThreadState *thread) {
+    if (num_ != FLAGS_num) {
       char msg[100];
-      snprintf(msg, sizeof(msg), "(%d ops)", num_entries);
-      message_ = msg;
+      snprintf(msg, sizeof(msg), "(%d ops)", num_);
+      thread->stats.AddMessage(msg);
     }
 
+	if (write_order_ == RANDOM && shuff)
+	  thread->rand.Shuffle(shuff, num_);
+
+	RandomGenerator gen;
 	MDB_val mkey, mval;
 	MDB_txn *txn;
 	char key[100];
 	int ikey, flag = 0;
-	if (flags == INT) {
+	if (dbflags_ == INT) {
 		mkey.mv_data = &ikey;
 		mkey.mv_size = sizeof(ikey);
 	} else {
 		mkey.mv_data = key;
 	}
-	mval.mv_size = value_size;
-	if (order == SEQUENTIAL)
+	mval.mv_size = value_size_;
+	if (write_order_ == SEQUENTIAL)
 		flag = MDB_APPEND;
+	int64_t bytes = 0;
 //	flag |= MDB_RESERVE;
     // Write to database
-    for (int i = 0; i < num_entries; i+= entries_per_batch)
+    for (int i = 0; i < num_; i+= entries_per_batch_)
     {
 	  MDB_cursor *mc;
 	  mdb_txn_begin(db_, NULL, 0, &txn);
 	  mdb_cursor_open(txn, dbi_, &mc);
 	  
-	  for (int j=0; j < entries_per_batch; j++) {
+	  for (int j=0; j < entries_per_batch_; j++) {
 
-      const int k = (order == SEQUENTIAL) ? i+j : (shuff ? shuff[i+j] : (rand_.Next() % num_entries));
+      const int k = (write_order_ == SEQUENTIAL) ? i+j : (shuff ? shuff[i+j] : (thread->rand.Next() % FLAGS_num));
 	  int rc;
-	  if (flags == INT)
+	  if (dbflags_ == INT)
 	  	  ikey = k;
 	  else
 		  mkey.mv_size = snprintf(key, sizeof(key), "%016d", k);
-      bytes_ += value_size + mkey.mv_size;
+      bytes += value_size_ + mkey.mv_size;
 
-	  mval.mv_data = (void *)gen_.Generate(value_size).data();
-	  mval.mv_size = value_size;
+	  mval.mv_data = (void *)gen.Generate(value_size_).data();
+	  mval.mv_size = value_size_;
 	  rc = mdb_cursor_put(mc, &mkey, &mval, flag);
       if (rc) {
         fprintf(stderr, "set error: %s\n", mdb_strerror(rc));
       }
-      FinishedSingleOp();
+      thread->stats.FinishedSingleOp();
 	  }
 	  mdb_cursor_close(mc);
 	  mdb_txn_commit(txn);
     }
+	thread->stats.AddBytes(bytes);
   }
 
-  void ReadReverse() {
+  void ReadReverse(ThreadState *thread) {
     MDB_txn *txn;
 	MDB_cursor *cursor;
 	MDB_val key, data;
+	int64_t bytes = 0;
 
 	mdb_txn_begin(db_, NULL, MDB_RDONLY, &txn);
 	mdb_cursor_open(txn, dbi_, &cursor);
     while (mdb_cursor_get(cursor, &key, &data, MDB_PREV) == 0) {
-      bytes_ += key.mv_size + data.mv_size;
-      FinishedSingleOp();
+      bytes += key.mv_size + data.mv_size;
+      thread->stats.FinishedSingleOp();
     }
 	mdb_cursor_close(cursor);
 	mdb_txn_abort(txn);
+	thread->stats.AddBytes(bytes);
   }
 
-  void ReadSequential() {
+  void ReadSequential(ThreadState *thread) {
     MDB_txn *txn;
 	MDB_cursor *cursor;
 	MDB_val key, data;
+	int64_t bytes = 0;
 
 	mdb_txn_begin(db_, NULL, MDB_RDONLY, &txn);
 	mdb_cursor_open(txn, dbi_, &cursor);
     while (mdb_cursor_get(cursor, &key, &data, MDB_NEXT) == 0) {
-      bytes_ += key.mv_size + data.mv_size;
-      FinishedSingleOp();
+      bytes += key.mv_size + data.mv_size;
+      thread->stats.FinishedSingleOp();
     }
 	mdb_cursor_close(cursor);
 	mdb_txn_abort(txn);
+	thread->stats.AddBytes(bytes);
   }
 
-  void ReadRandom() {
+  void ReadRandom(ThreadState *thread) {
     MDB_txn *txn;
 	MDB_cursor *cursor;
 	MDB_val key, data;
+	int64_t bytes = 0;
+	int found = 0;
     char ckey[100];
 	key.mv_data = ckey;
 
 	mdb_txn_begin(db_, NULL, MDB_RDONLY, &txn);
 	mdb_cursor_open(txn, dbi_, &cursor);
+	mdb_txn_reset(txn);
     for (int i = 0; i < reads_; i++) {
-      const int k = rand_.Next() % reads_;
+      const int k = thread->rand.Next() % FLAGS_num;
       key.mv_size = snprintf(ckey, sizeof(ckey), "%016d", k);
-	  if (i) mdb_txn_renew(txn);
-	  mdb_cursor_get(cursor, &key, &data, MDB_SET);
-      FinishedSingleOp();
+	  mdb_txn_renew(txn);
+	  if (!mdb_cursor_get(cursor, &key, &data, MDB_SET))
+		found++;
+      thread->stats.FinishedSingleOp();
 	  mdb_txn_reset(txn);
     }
 	mdb_cursor_close(cursor);
 	mdb_txn_abort(txn);
+	char msg[100];
+	snprintf(msg, sizeof(msg), "(%d of %d found)", found, num_);
+    thread->stats.AddMessage(msg);
+  }
+
+  void ReadWhileWriting(ThreadState* thread) {
+    if (thread->tid > 0) {
+      ReadRandom(thread);
+    } else {
+      // Special thread that keeps writing until other threads are done.
+      RandomGenerator gen;
+      while (true) {
+        {
+          MutexLock l(&thread->shared->mu);
+          if (thread->shared->num_done + 1 >= thread->shared->num_initialized) {
+            // Other threads have finished
+            break;
+          }
+        }
+
+		MDB_val mkey, mval;
+		MDB_txn *txn;
+        const int k = thread->rand.Next() % FLAGS_num;
+        char key[100];
+		int rc;
+		mkey.mv_data = key;
+        mkey.mv_size = snprintf(key, sizeof(key), "%016d", k);
+		mval.mv_data = (void *)gen.Generate(value_size_).data();
+		mval.mv_size = value_size_;
+		mdb_txn_begin(db_, NULL, 0, &txn);
+        rc = mdb_put(txn, dbi_, &mkey, &mval, 0);
+        if (rc) {
+          fprintf(stderr, "put error: %s\n", mdb_strerror(rc));
+          exit(1);
+        }
+		rc = mdb_txn_commit(txn);
+        if (rc) {
+          fprintf(stderr, "commit error: %s\n", mdb_strerror(rc));
+          exit(1);
+        }
+      }
+
+      // Do not count any of the preceding work/delay in stats.
+      thread->stats.Start();
+    }
   }
 };
 
@@ -649,6 +878,8 @@ int main(int argc, char** argv) {
       FLAGS_batch = n;
     } else if (sscanf(argv[i], "--reads=%d%c", &n, &junk) == 1) {
       FLAGS_reads = n;
+    } else if (sscanf(argv[i], "--threads=%d%c", &n, &junk) == 1) {
+      FLAGS_threads = n;
     } else if (sscanf(argv[i], "--value_size=%d%c", &n, &junk) == 1) {
       FLAGS_value_size = n;
     } else if (sscanf(argv[i], "--cleanmem=%d%c", &n, &junk) == 1) {
