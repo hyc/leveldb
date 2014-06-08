@@ -76,6 +76,13 @@ static int FLAGS_reads = -1;
 // Number of concurrent threads to run.
 static int FLAGS_threads = 1;
 
+// Time in seconds for the random-ops tests to run.
+static int FLAGS_duration = 0;
+
+// Per-thread rate limit on writes per second.
+// Only for the readwhilewriting test.
+static int FLAGS_writes_per_second;
+
 // Size of each value
 static int FLAGS_value_size = 100;
 
@@ -183,6 +190,7 @@ class Stats {
   double last_op_finish_;
   Histogram hist_;
   std::string message_;
+  bool exclude_from_merge_;
 
  public:
   Stats() { Start(); }
@@ -197,9 +205,14 @@ class Stats {
     start_ = Env::Default()->NowMicros();
     finish_ = start_;
     message_.clear();
+	// When set, stats from this thread won't be merged with others.
+	exclude_from_merge_ = false;
   }
 
   void Merge(const Stats& other) {
+	if (other.exclude_from_merge_)
+		return;
+
     hist_.Merge(other.hist_);
     done_ += other.done_;
     bytes_ += other.bytes_;
@@ -219,6 +232,8 @@ class Stats {
   void AddMessage(Slice msg) {
     AppendWithSpace(&message_, msg);
   }
+
+  void SetExcludeFromMerge() { exclude_from_merge_ = true; }
 
   void FinishedSingleOp() {
     if (FLAGS_histogram) {
@@ -314,6 +329,38 @@ struct ThreadState {
   }
 };
 
+class Duration {
+ public:
+  Duration(int max_seconds, int64_t max_ops) {
+    max_seconds_ = max_seconds;
+    max_ops_= max_ops;
+    ops_ = 0;
+    start_at_ = Env::Default()->NowMicros();
+  }
+
+  bool Done(int64_t increment) {
+    if (increment <= 0) increment = 1;    // avoid Done(0) and infinite loops
+    ops_ += increment;
+
+    if (max_seconds_) {
+      // Recheck every appx 1000 ops (exact iff increment is factor of 1000)
+      if ((ops_/1000) != ((ops_-increment)/1000)) {
+        double now = Env::Default()->NowMicros();
+        return ((now - start_at_) / 1000000.0) >= max_seconds_;
+      } else {
+        return false;
+      }
+    } else {
+      return ops_ > max_ops_;
+    }
+  }
+
+ private:
+  int max_seconds_;
+  int64_t max_ops_;
+  int64_t ops_;
+  double start_at_;
+};
 }  // namespace
 
 class Benchmark {
@@ -751,6 +798,9 @@ class Benchmark {
   }
 
   void DoWrite(ThreadState* thread, bool seq) {
+	const int test_duration = seq ? 0 : FLAGS_duration;
+
+	Duration duration(test_duration, num_);
     if (num_ != FLAGS_num) {
       char msg[100];
       snprintf(msg, sizeof(msg), "(%d ops)", num_);
@@ -763,7 +813,8 @@ class Benchmark {
     WriteBatch batch;
     Status s;
     int64_t bytes = 0;
-    for (int i = 0; i < num_; i += entries_per_batch_) {
+	int i = 0;
+	while (!duration.Done(entries_per_batch_)) {
       batch.Clear();
       for (int j = 0; j < entries_per_batch_; j++) {
         const int k = seq ? i+j : (shuff ? shuff[i+j] : (thread->rand.Next() % FLAGS_num));
@@ -778,6 +829,7 @@ class Benchmark {
         fprintf(stderr, "put error: %s\n", s.ToString().c_str());
         exit(1);
       }
+	  i += entries_per_batch_;
     }
     thread->stats.AddBytes(bytes);
   }
@@ -811,18 +863,21 @@ class Benchmark {
   void ReadRandom(ThreadState* thread) {
     ReadOptions options;
     std::string value;
-    int found = 0;
-    for (int i = 0; i < reads_; i++) {
+	size_t read = 0;
+    size_t found = 0;
+	Duration duration(FLAGS_duration, reads_);
+    while (!duration.Done(1)) {
       char key[100];
       const int k = thread->rand.Next() % FLAGS_num;
       snprintf(key, sizeof(key), "%016d", k);
+	  read++;
       if (db_->Get(options, key, &value).ok()) {
         found++;
       }
       thread->stats.FinishedSingleOp();
     }
     char msg[100];
-    snprintf(msg, sizeof(msg), "(%d of %d found)", found, num_);
+    snprintf(msg, sizeof(msg), "(%zd of %zd found)", found, read);
     thread->stats.AddMessage(msg);
   }
 
@@ -854,19 +909,22 @@ class Benchmark {
   void SeekRandom(ThreadState* thread) {
     ReadOptions options;
     std::string value;
-    int found = 0;
-    for (int i = 0; i < reads_; i++) {
+    size_t read = 0;
+    size_t found = 0;
+	Duration duration(FLAGS_duration, reads_);
+    while (!duration.Done(1)) {
       Iterator* iter = db_->NewIterator(options);
       char key[100];
       const int k = thread->rand.Next() % FLAGS_num;
       snprintf(key, sizeof(key), "%016d", k);
       iter->Seek(key);
+	  read++;
       if (iter->Valid() && iter->key() == key) found++;
       delete iter;
       thread->stats.FinishedSingleOp();
     }
     char msg[100];
-    snprintf(msg, sizeof(msg), "(%d of %d found)", found, num_);
+    snprintf(msg, sizeof(msg), "(%zd of %zd found)", found, read);
     thread->stats.AddMessage(msg);
   }
 
@@ -874,7 +932,10 @@ class Benchmark {
     RandomGenerator gen;
     WriteBatch batch;
     Status s;
-    for (int i = 0; i < num_; i += entries_per_batch_) {
+	Duration duration(seq ? 0 : FLAGS_duration, num_);
+	int64_t i = 0;
+
+    while (!duration.Done(entries_per_batch_)) {
       batch.Clear();
       for (int j = 0; j < entries_per_batch_; j++) {
         const int k = seq ? i+j : (thread->rand.Next() % FLAGS_num);
@@ -888,6 +949,7 @@ class Benchmark {
         fprintf(stderr, "del error: %s\n", s.ToString().c_str());
         exit(1);
       }
+	  i += entries_per_batch_;
     }
   }
 
@@ -903,29 +965,57 @@ class Benchmark {
     if (thread->tid > 0) {
       ReadRandom(thread);
     } else {
-      // Special thread that keeps writing until other threads are done.
-      RandomGenerator gen;
-      while (true) {
-        {
-          MutexLock l(&thread->shared->mu);
-          if (thread->shared->num_done + 1 >= thread->shared->num_initialized) {
-            // Other threads have finished
-            break;
-          }
-        }
+	  BGWriter(thread);
+	}
+  }
 
-        const int k = thread->rand.Next() % FLAGS_num;
-        char key[100];
-        snprintf(key, sizeof(key), "%016d", k);
-        Status s = db_->Put(write_options_, key, gen.Generate(value_size_));
-        if (!s.ok()) {
-          fprintf(stderr, "put error: %s\n", s.ToString().c_str());
-          exit(1);
-        }
+  void BGWriter(ThreadState* thread) {
+	// Special thread that keeps writing until other threads are done.
+	RandomGenerator gen;
+	double last = Env::Default()->NowMicros();
+	int writes_per_second_by_10 = 0;
+	int num_writes = 0;
+
+	// --writes_per_second rate limit is enforced per 100 milliseconds
+	// intervals to avoid a burst of writes at the start of each second.
+	if (FLAGS_writes_per_second > 0)
+		writes_per_second_by_10 = FLAGS_writes_per_second / 10;
+
+	// Don't merge stats from this thread with the readers.
+	thread->stats.SetExcludeFromMerge();
+
+	while (true) {
+	  {
+		MutexLock l(&thread->shared->mu);
+		if (thread->shared->num_done + 1 >= thread->shared->num_initialized) {
+		  // Other threads have finished
+		  break;
+		}
+	  }
+
+	  const int k = thread->rand.Next() % FLAGS_num;
+	  char key[100];
+	  snprintf(key, sizeof(key), "%016d", k);
+	  Status s = db_->Put(write_options_, key, gen.Generate(value_size_));
+	  if (!s.ok()) {
+		fprintf(stderr, "put error: %s\n", s.ToString().c_str());
+		exit(1);
+	  }
+	  thread->stats.FinishedSingleOp();
+
+	  ++num_writes;
+	  if (writes_per_second_by_10 && num_writes >= writes_per_second_by_10) {
+		double now = Env::Default()->NowMicros();
+		double usecs_since_last = now - last;
+
+		num_writes = 0;
+		last = now;
+
+		if (usecs_since_last < 100000.0) {
+		  Env::Default()->SleepForMicroseconds(100000.0 - usecs_since_last);
+		  last = Env::Default()->NowMicros();
+		}
       }
-
-      // Do not count any of the preceding work/delay in stats.
-      thread->stats.Start();
     }
   }
 
@@ -990,6 +1080,10 @@ int main(int argc, char** argv) {
       FLAGS_reads = n;
     } else if (sscanf(argv[i], "--threads=%d%c", &n, &junk) == 1) {
       FLAGS_threads = n;
+    } else if (sscanf(argv[i], "--duration=%d%c", &n, &junk) == 1) {
+      FLAGS_duration = n;
+    } else if (sscanf(argv[i], "--writes_per_second=%d%c", &n, &junk) == 1) {
+      FLAGS_writes_per_second = n;
     } else if (sscanf(argv[i], "--value_size=%d%c", &n, &junk) == 1) {
       FLAGS_value_size = n;
     } else if (sscanf(argv[i], "--write_buffer_size=%d%c", &n, &junk) == 1) {
