@@ -184,8 +184,8 @@ class Stats {
   double start_;
   double finish_;
   double seconds_;
-  int done_;
-  int next_report_;
+  size_t done_;
+  int64_t next_report_;
   int64_t bytes_;
   double last_op_finish_;
   HistogramImpl hist_;
@@ -256,7 +256,7 @@ class Stats {
       else if (next_report_ < 100000) next_report_ += 10000;
       else if (next_report_ < 500000) next_report_ += 50000;
       else                            next_report_ += 100000;
-      fprintf(stderr, "... finished %d ops%30s\r", done_, "");
+      fprintf(stderr, "... finished %zd ops%30s\r", done_, "");
       fflush(stderr);
     }
   }
@@ -271,22 +271,21 @@ class Stats {
     if (done_ < 1) done_ = 1;
 
     std::string extra;
+    double elapsed = (finish_ - start_) * 1e-6;
     if (bytes_ > 0) {
       // Rate is computed on actual elapsed time, not the sum of per-thread
       // elapsed times.
-      double elapsed = (finish_ - start_) * 1e-6;
       char rate[100];
       snprintf(rate, sizeof(rate), "%6.1f MB/s",
                (bytes_ / 1048576.0) / elapsed);
       extra = rate;
     }
     AppendWithSpace(&extra, message_);
-    double elapsed = (finish_ - start_) * 1e-6;
     double throughput = (double)done_/elapsed;
 
     fprintf(stdout, "%-12s : %11.3f micros/op %ld ops/sec;%s%s\n",
             name.ToString().c_str(),
-            seconds_ * 1e6 / done_,
+            elapsed * 1e6 / done_,
             (long)throughput,
             (extra.empty() ? "" : " "),
             extra.c_str());
