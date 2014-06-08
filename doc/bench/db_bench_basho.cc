@@ -266,10 +266,13 @@ class Stats {
       extra = rate;
     }
     AppendWithSpace(&extra, message_);
+    double elapsed = (finish_ - start_) * 1e-6;
+    double throughput = (double)done_/elapsed;
 
-    fprintf(stdout, "%-12s : %11.3f micros/op;%s%s\n",
+    fprintf(stdout, "%-12s : %11.3f micros/op %ld ops/sec;%s%s\n",
             name.ToString().c_str(),
             seconds_ * 1e6 / done_,
+            (long)throughput,
             (extra.empty() ? "" : " "),
             extra.c_str());
     if (FLAGS_histogram) {
