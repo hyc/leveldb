@@ -806,19 +806,19 @@ class Benchmark {
 
 	key.flags = 0; data.flags = 0;
 	key.data = ckey;
-	db_->txn_begin(db_, NULL, &txn, 0);
-	dbh_->cursor(dbh_, txn, &cursor, 0);
 	Duration duration(FLAGS_duration, reads_);
 	while (!duration.Done(1)) {
       const int k = thread->rand.Next() % FLAGS_num;
+	  db_->txn_begin(db_, NULL, &txn, 0);
+	  dbh_->cursor(dbh_, txn, &cursor, 0);
       key.size = snprintf(ckey, sizeof(ckey), "%016d", k);
 	  read++;
 	  if (!cursor->get(cursor, &key, &data, DB_SET))
 	  	found++;
       thread->stats.FinishedSingleOp();
+	  cursor->close(cursor);
+	  txn->abort(txn);
     }
-	cursor->close(cursor);
-	txn->abort(txn);
 	char msg[100];
 	snprintf(msg, sizeof(msg), "(%zd of %zd found)", found, read);
     thread->stats.AddMessage(msg);

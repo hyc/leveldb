@@ -711,23 +711,19 @@ class Benchmark {
 
     // Create tuning options and open the database
 	rc = db_env_create(&db_, 0);
-	if (flags != SYNC)
-		env_opt |= DB_TXN_NOSYNC;
 	rc =db_->set_flags(db_, env_opt, 1);
-	txn_flags =	DB_INIT_LOCK|DB_INIT_LOG|DB_INIT_TXN|DB_INIT_MPOOL|DB_THREAD|DB_PRIVATE;
-	if (!FLAGS_use_existing_db)
-		txn_flags |= DB_CREATE;
+	txn_flags =	DB_INIT_LOCK|DB_INIT_LOG|DB_INIT_TXN|DB_INIT_MPOOL|DB_THREAD|DB_PRIVATE|DB_CREATE;
 	rc = db_->open(db_, file_name, txn_flags, 0664);
 	if (rc) {
+      fprintf(stderr, "open error: %s\n", db_strerror(rc));
+	  exit(1);
+    }
     rc = db_->set_lk_max_memory(db_, FLAGS_lk_max_memory);
     rc = db_->set_cachesize(db_, FLAGS_cache_size / (1 << 30), FLAGS_cache_size % (1 << 30), 1);
     rc = db_->checkpointing_set_period(db_, FLAGS_checkpoint_period);
     rc = db_->cleaner_set_period(db_, FLAGS_cleaner_period);
     rc = db_->cleaner_set_iterations(db_, FLAGS_cleaner_iterations);
     db_->change_fsync_log_period(db_, FLAGS_sync_period);
-      fprintf(stderr, "open error: %s\n", db_strerror(rc));
-	  exit(1);
-    }
 	rc = db_create(&dbh_, db_, 0);
     rc = dbh_->set_pagesize(dbh_, FLAGS_node_size);
     rc = dbh_->set_readpagesize(dbh_, FLAGS_basement_node_size);
@@ -827,31 +823,27 @@ class Benchmark {
 	txn->abort(txn);
   }
 
-  static int FoundIt(const DBT *key __attribute__((unused)), const DBT *value __attribute__((unused)), void *extra) {
-    size_t *fptr = (size_t *)extra;
-	*fptr++;
-    return 0;
-  }
-
   void ReadRandom(ThreadState *thread) {
     DB_TXN *txn;
 	DBT key, data;
     char ckey[100];
 	size_t read = 0;
 	size_t found = 0;
+	int rc;
 
 	key.flags = 0; data.flags = 0;
 	key.data = ckey;
-	db_->txn_begin(db_, NULL, &txn, DB_TXN_SNAPSHOT);
 	Duration duration(FLAGS_duration, reads_);
 	while (!duration.Done(1)) {
       const int k = thread->rand.Next() % FLAGS_num;
       key.size = snprintf(ckey, sizeof(ckey), "%016d", k);
+	  db_->txn_begin(db_, NULL, &txn, DB_TXN_SNAPSHOT);
 	  read++;
-      dbh_->getf_set(dbh_, txn, 0, &key, FoundIt, &found);
+      rc = dbh_->get(dbh_, txn, &key, &data, 0);
+	  if (!rc) found++;
       thread->stats.FinishedSingleOp();
+	  txn->abort(txn);
     }
-	txn->abort(txn);
 	char msg[100];
 	snprintf(msg, sizeof(msg), "(%zd of %zd found)", found, read);
 	thread->stats.AddMessage(msg);
