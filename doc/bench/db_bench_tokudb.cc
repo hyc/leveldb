@@ -88,7 +88,7 @@ static double FLAGS_compression_ratio = 0.5;
 static bool FLAGS_histogram = false;
 
 // Cache size. Default 4 MB
-static int FLAGS_cache_size = 4194304;
+static size_t FLAGS_cache_size = 4194304;
 
 // Page size. Default 1 KB
 static int FLAGS_page_size = 1024;
@@ -752,14 +752,14 @@ class Benchmark {
     // Create tuning options and open the database
 	rc = db_env_create(&db_, 0);
 	rc =db_->set_flags(db_, env_opt, 1);
+    rc = db_->set_lk_max_memory(db_, FLAGS_lk_max_memory);
+    rc = db_->set_cachesize(db_, FLAGS_cache_size / (1 << 30), FLAGS_cache_size % (1 << 30), 1);
 	txn_flags =	DB_INIT_LOCK|DB_INIT_LOG|DB_INIT_TXN|DB_INIT_MPOOL|DB_THREAD|DB_PRIVATE|DB_CREATE;
 	rc = db_->open(db_, file_name, txn_flags, 0664);
 	if (rc) {
       fprintf(stderr, "open error: %s\n", db_strerror(rc));
 	  exit(1);
     }
-    rc = db_->set_lk_max_memory(db_, FLAGS_lk_max_memory);
-    rc = db_->set_cachesize(db_, FLAGS_cache_size / (1 << 30), FLAGS_cache_size % (1 << 30), 1);
     rc = db_->checkpointing_set_period(db_, FLAGS_checkpoint_period);
     rc = db_->cleaner_set_period(db_, FLAGS_cleaner_period);
     rc = db_->cleaner_set_iterations(db_, FLAGS_cleaner_iterations);
