@@ -56,7 +56,7 @@ TESTS = \
 PROGRAMS = db_bench leveldbutil $(TESTS)
 BENCHMARKS = db_bench db_bench_sqlite3 db_bench_tree_db db_bench_mdb \
 	db_bench_bdb db_bench_sophia db_bench_tokudb \
-	db_bench_basho db_bench_hyper db_bench_rocksdb
+	db_bench_basho db_bench_hyper db_bench_rocksdb db_bench_wiredtiger
 
 BASHO = ../basho_leveldb
 HYPER = ../HyperLevelDB
@@ -161,6 +161,9 @@ db_bench_tokudb: doc/bench/db_bench_tokudb.o $(LIBRARY) $(TESTUTIL)
 db_bench_ydb: doc/bench/db_bench_ydb.o $(LIBRARY) $(TESTUTIL)
 #	$(CXX) doc/bench/db_bench_ydb.o $(LIBRARY) $(TESTUTIL) -o $@ $(LDFLAGS) /usr/local/lib/libtokufractaltree_static.a /usr/local/lib/libtokuportability_static.a /usr/local/lib/libjemalloc.a -ldl -lz
 	$(CXX) doc/bench/db_bench_ydb.o $(LIBRARY) $(TESTUTIL) -o $@ $(LDFLAGS) -ltokufractaltree -ltokuportability -ljemalloc -ldl -lz
+
+db_bench_wiredtiger: doc/bench/db_bench_wiredtiger.o $(LIBRARY) $(TESTUTIL)
+	$(CXX) doc/bench/db_bench_wiredtiger.o $(LIBRARY) $(TESTUTIL) -o $@ $(LDFLAGS) /usr/local/lib/libwiredtiger.a -ldl
 
 leveldbutil: db/leveldb_main.o $(LIBOBJECTS)
 	$(CXX) $(LDFLAGS) db/leveldb_main.o $(LIBOBJECTS) -o $@ $(LIBS)

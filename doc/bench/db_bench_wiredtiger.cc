@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <sstream>
 #include <unistd.h> 
+#include <time.h>
 #include <errno.h> /* For ETIMEDOUT */
 #include "util/crc32c.h"
 #include "util/histogram.h"
@@ -39,52 +40,29 @@
 //      sstables    -- Print sstable info
 //      heapprofile -- Dump a heap profile (if supported by this port)
 static const char* FLAGS_benchmarks =
-#ifdef  SYMAS_CONFIG
-    "fillseqsync,"
     "fillrandsync,"
-    "fillseqbatch,"
+    "fillrandom,"
     "fillrandbatch,"
-    "fillrandom,"
+    "fillseqsync,"
+    "fillseq,"
+    "fillseqbatch,"
     "overwrite,"
     "readrandom,"
-    "readseq,"
-    "readreverse,"
-#else
-#ifdef  BENCH_EXT
-    "fillseq,"
-    "deleteseq,"
-    "fillseq,"
-    "deleterandom,"
-    "fillrandom,"
-    "deleteseq,"
-    "fillrandom,"
-    "deleterandom,"
-#endif
-    "fillseq,"
-    "fillsync,"
-    "fillrandom,"
-    "overwrite,"
-    "readrandom,"
+#if 0
     "readrandom,"  // Extra run to allow previous compactions to quiesce
+#endif
     "readseq,"
     "readreverse,"
+#if 0
+    "compact,"
     "readrandom,"
     "readseq,"
     "readreverse,"
     "fill100K,"
-#ifdef  BENCH_EXT
-    "fillseq,"
-    "readhot,"
-    "readrandomsmall,"
-    "readrandomsmall,"
-    "seekrandom,"
-    "readwhilewriting,"
-    "compact,"
     "crc32c,"
     "snappycomp,"
     "snappyuncomp,"
     "acquireload,"
-#endif
 #endif
     ;
 
@@ -96,6 +74,17 @@ static int FLAGS_reads = -1;
 
 // Number of concurrent threads to run.
 static int FLAGS_threads = 1;
+
+// Time in seconds for the random-ops tests to run.
+static int FLAGS_duration = 0;
+
+// Per-thread rate limit on writes per second.
+// Only for the readwhilewriting test.
+static int FLAGS_writes_per_second;
+
+// Stats are reported every N operations when this is
+// greater than zero. When 0 the interval grows over time.
+static int FLAGS_stats_interval = 0;
 
 // Size of each value
 static int FLAGS_value_size = 100;
@@ -136,12 +125,15 @@ static bool FLAGS_stagger = false;
 // Stagger starting point of reads for sequential (or reverse).
 static int FLAGS_max_compact_wait = 1200;
 
+// If true, use shuffle instead of original random algorithm.
+// Guarantees full set of unique data, but uses memory for the
+// shuffle array, not feasible for larger tests.
+static bool FLAGS_shuffle = false;
+
 // Use the db with the following name.
 static const char* FLAGS_db = NULL;
 
-#ifdef RAND_SHUFFLE
 static int *shuff = NULL;
-#endif
 
 namespace leveldb {
 
@@ -169,7 +161,7 @@ class RandomGenerator {
     pos_ = 0;
   }
 
-  Slice Generate(int len) {
+  Slice Generate(size_t len) {
     if (pos_ + len > data_.size()) {
       pos_ = 0;
       assert(len < data_.size());
@@ -180,11 +172,11 @@ class RandomGenerator {
 };
 
 static Slice TrimSpace(Slice s) {
-  int start = 0;
+  size_t start = 0;
   while (start < s.size() && isspace(s[start])) {
     start++;
   }
-  int limit = s.size();
+  size_t limit = s.size();
   while (limit > start && isspace(s[limit-1])) {
     limit--;
   }
@@ -201,32 +193,44 @@ static void AppendWithSpace(std::string* str, Slice msg) {
 
 class Stats {
  private:
+  int id_;
   double start_;
   double finish_;
   double seconds_;
-  int done_;
-  int next_report_;
+  size_t done_;
+  size_t last_report_done_;
+  int64_t next_report_;
   int64_t bytes_;
   double last_op_finish_;
+  double last_report_finish_;
   Histogram hist_;
   std::string message_;
+  bool exclude_from_merge_;
 
  public:
-  Stats() { Start(); }
+  Stats() { Start(-1); }
 
-  void Start() {
-    next_report_ = 100;
+  void Start(int id) {
+    id_ = id;
+    next_report_ = FLAGS_stats_interval ? FLAGS_stats_interval : 100;
     last_op_finish_ = start_;
     hist_.Clear();
     done_ = 0;
+	last_report_done_ = 0;
     bytes_ = 0;
     seconds_ = 0;
     start_ = Env::Default()->NowMicros();
     finish_ = start_;
+	last_report_finish_ = start_;
     message_.clear();
+	// When set, stats from this thread won't be merged with others.
+	exclude_from_merge_ = false;
   }
 
   void Merge(const Stats& other) {
+	if (other.exclude_from_merge_)
+		return;
+
     hist_.Merge(other.hist_);
     done_ += other.done_;
     bytes_ += other.bytes_;
@@ -247,6 +251,16 @@ class Stats {
     AppendWithSpace(&message_, msg);
   }
 
+  void SetExcludeFromMerge() { exclude_from_merge_ = true; }
+
+  void TimeStr(time_t seconds, char *buf) {
+	struct tm tm;
+	localtime_r(&seconds, &tm);
+	sprintf(buf, "%04d/%02d/%02d-%02d:%02d:%02d",
+		tm.tm_year+1900, tm.tm_mon+1, tm.tm_mday,
+		tm.tm_hour, tm.tm_min, tm.tm_sec);
+  }
+
   void FinishedSingleOp() {
     if (FLAGS_histogram) {
       double now = Env::Default()->NowMicros();
@@ -261,6 +275,7 @@ class Stats {
 
     done_++;
     if (done_ >= next_report_) {
+	  if (!FLAGS_stats_interval) {
       if      (next_report_ < 1000)   next_report_ += 100;
       else if (next_report_ < 5000)   next_report_ += 500;
       else if (next_report_ < 10000)  next_report_ += 1000;
@@ -268,8 +283,28 @@ class Stats {
       else if (next_report_ < 100000) next_report_ += 10000;
       else if (next_report_ < 500000) next_report_ += 50000;
       else                            next_report_ += 100000;
-      fprintf(stderr, "... finished %d ops%30s\r", done_, "");
+      fprintf(stderr, "... finished %zd ops%30s\r", done_, "");
       fflush(stderr);
+	  } else {
+        double now = Env::Default()->NowMicros();
+		char buf[20];
+		TimeStr((int) (now/1000000), buf);
+        fprintf(stderr,
+                "%s ... thread %d: (%zd,%zd) ops and "
+                "(%.1f,%.1f) ops/second in (%.6f,%.6f) seconds\n",
+                buf,
+                id_,
+                done_ - last_report_done_, done_,
+                (done_ - last_report_done_) /
+                ((now - last_report_finish_) / 1000000.0),
+                done_ / ((now - start_) / 1000000.0),
+                (now - last_report_finish_) / 1000000.0,
+                (now - start_) / 1000000.0);
+        fflush(stderr);
+        next_report_ += FLAGS_stats_interval;
+        last_report_finish_ = now;
+        last_report_done_ = done_;
+	  }
     }
   }
 
@@ -283,20 +318,22 @@ class Stats {
     if (done_ < 1) done_ = 1;
 
     std::string extra;
+    double elapsed = (finish_ - start_) * 1e-6;
     if (bytes_ > 0) {
       // Rate is computed on actual elapsed time, not the sum of per-thread
       // elapsed times.
-      double elapsed = (finish_ - start_) * 1e-6;
       char rate[100];
       snprintf(rate, sizeof(rate), "%6.1f MB/s",
                (bytes_ / 1048576.0) / elapsed);
       extra = rate;
     }
     AppendWithSpace(&extra, message_);
+    double throughput = (double)done_/elapsed;
 
-    fprintf(stdout, "%-12s : %11.3f micros/op;%s%s\n",
+    fprintf(stdout, "%-12s : %11.3f micros/op %ld ops/sec;%s%s\n",
             name.ToString().c_str(),
-            seconds_ * 1e6 / done_,
+            elapsed * 1e6 / done_,
+            (long)throughput,
             (extra.empty() ? "" : " "),
             extra.c_str());
     if (FLAGS_histogram) {
@@ -336,10 +373,8 @@ struct ThreadState {
   ThreadState(int index, WT_CONNECTION *conn)
       : tid(index),
         rand(1000 + index) {
-#ifdef  RAND_SHUFFLE
-    if (index == 0)
-  rand.Shuffle(shuff, FLAGS_num);
-#endif
+    if (index == 0 && shuff)
+		rand.Shuffle(shuff, FLAGS_num);
     conn->open_session(conn, NULL, NULL, &session);
     assert(session != NULL);
   }
@@ -348,6 +383,38 @@ struct ThreadState {
   }
 };
 
+class Duration {
+ public:
+  Duration(int max_seconds, int64_t max_ops) {
+    max_seconds_ = max_seconds;
+    max_ops_= max_ops;
+    ops_ = 0;
+    start_at_ = Env::Default()->NowMicros();
+  }
+
+  bool Done(int64_t increment) {
+    if (increment <= 0) increment = 1;    // avoid Done(0) and infinite loops
+    ops_ += increment;
+
+    if (max_seconds_) {
+      // Recheck every appx 1000 ops (exact iff increment is factor of 1000)
+      if ((ops_/1000) != ((ops_-increment)/1000)) {
+        double now = Env::Default()->NowMicros();
+        return ((now - start_at_) / 1000000.0) >= max_seconds_;
+      } else {
+        return false;
+      }
+    } else {
+      return ops_ > max_ops_;
+    }
+  }
+
+ private:
+  int max_seconds_;
+  int64_t max_ops_;
+  int64_t ops_;
+  double start_at_;
+};
 }  // namespace
 
 class Benchmark {
@@ -498,40 +565,34 @@ class Benchmark {
       if (name == Slice("fillseq")) {
         fresh_db = true;
         method = &Benchmark::WriteSeq;
-#ifdef SYMAS_CONFIG
+      } else if (name == Slice("fillseqbatch")) {
+        fresh_db = true;
+        entries_per_batch_ = 1000;
+        method = &Benchmark::WriteSeq;
       } else if (name == Slice("fillrandbatch")) {
         fresh_db = true;
         entries_per_batch_ = 1000;
         method = &Benchmark::WriteRandom;
-      } else if (name == Slice("fillseqbatch")) {
-#else
-      } else if (name == Slice("fillbatch")) {
-#endif
-        fresh_db = true;
-        entries_per_batch_ = 1000;
-        method = &Benchmark::WriteSeq;
       } else if (name == Slice("fillrandom")) {
         fresh_db = true;
         method = &Benchmark::WriteRandom;
       } else if (name == Slice("overwrite")) {
         fresh_db = false;
         method = &Benchmark::WriteRandom;
-#ifdef SYMAS_CONFIG
       } else if (name == Slice("fillseqsync")) {
-        num_ /= 1000;
-        if (num_ < 10)
-            num_ = 10;
         fresh_db = true;
+#if 1
+        num_ /= 1000;
+		if (num_<10) num_=10;
+#endif
         sync_ = true;
         method = &Benchmark::WriteSeq;
       } else if (name == Slice("fillrandsync")) {
-#else
-      } else if (name == Slice("fillsync")) {
-#endif
-        num_ /= 1000;
-        if (num_ < 10)
-            num_ = 10;
         fresh_db = true;
+#if 1
+        num_ /= 1000;
+		if (num_<10) num_=10;
+#endif
         sync_ = true;
         method = &Benchmark::WriteRandom;
       } else if (name == Slice("fill100K")) {
@@ -621,16 +682,14 @@ class Benchmark {
 
       if (method != NULL) {
         RunBenchmark(num_threads, name, method);
-#ifdef SYMAS_CONFIG
   if (method == &Benchmark::WriteSeq ||
       method == &Benchmark::WriteRandom) {
       char cmd[200];
       std::string test_dir;
       Env::Default()->GetTestDirectory(&test_dir);
       sprintf(cmd, "du %s", test_dir.c_str());
-      system(cmd);
+      if (system(cmd)) exit(1);
   }
-#endif
       }
     }
     if (conn_ != NULL) {
@@ -662,7 +721,7 @@ class Benchmark {
       }
     }
 
-    thread->stats.Start();
+    thread->stats.Start(thread->tid);
     (arg->bm->*(arg->method))(thread);
     thread->stats.Stop();
 
@@ -810,7 +869,7 @@ class Benchmark {
     /* TODO: Translate write_buffer_size - maybe it's chunk size?
     options.write_buffer_size = FLAGS_write_buffer_size;
     */
-#ifndef SYMAS_CONFIG
+#if 0 /* ndef SYMAS_CONFIG */
     config << ",extensions=[libwiredtiger_snappy.so]";
 #endif
     //config << ",verbose=[lsm]";
@@ -856,7 +915,7 @@ class Benchmark {
           config << ",bloom=false";
         config << ")";
       }
-#ifndef SYMAS_CONFIG
+#if 0 /* ndef SYMAS_CONFIG */
       config << ",block_compressor=snappy";
 #endif
       fprintf(stderr, "Creating %s with config %s\n",uri_.c_str(), config.str().c_str());
@@ -879,6 +938,9 @@ class Benchmark {
   }
 
   void DoWrite(ThreadState* thread, bool seq) {
+	const int test_duration = seq ? 0 : FLAGS_duration;
+
+	Duration duration(test_duration, num_);
     if (num_ != FLAGS_num) {
       char msg[100];
       snprintf(msg, sizeof(msg), "(%d ops)", num_);
@@ -910,13 +972,10 @@ class Benchmark {
       fprintf(stderr, "open_cursor error: %s\n", wiredtiger_strerror(ret));
       exit(1);
     }
-    for (int i = 0; i < num_; i += entries_per_batch_) {
+	int i = 0;
+	while (!duration.Done(entries_per_batch_)) {
       for (int j = 0; j < entries_per_batch_; j++) {
-#ifdef RAND_SHUFFLE
-        int k = seq ? (i+j+stagger) % FLAGS_num : shuff[(i+j+stagger)%FLAGS_num];
-#else
-        int k = seq ? (i+j+stagger) % FLAGS_num : (thread->rand.Next() % FLAGS_num);
-#endif
+        int k = seq ? (i+j+stagger) % FLAGS_num : (shuff ? shuff[(i+j+stagger)%FLAGS_num] : (thread->rand.Next() % FLAGS_num));
         if (k == 0)
           continue; /* Wired Tiger does not support 0 keys. */
         char key[100];
@@ -932,6 +991,7 @@ class Benchmark {
         thread->stats.FinishedSingleOp();
         bytes += value_size_ + strlen(key);
       }
+	  i += entries_per_batch_;
     }
     cursor->close(cursor);
     thread->stats.AddBytes(bytes);
@@ -1040,16 +1100,18 @@ repeat:
       fprintf(stderr, "open_cursor error: %s\n", wiredtiger_strerror(ret));
       exit(1);
     }
-    int found = 0;
-    for (int i = 0; i < reads_; i++) {
+    size_t read = 0;
+    size_t found = 0;
+	Duration duration(FLAGS_duration, reads_);
+	while (!duration.Done(1)) {
       char key[100];
       const int k = thread->rand.Next() % FLAGS_num;
       if (k == 0) {
-        found++; /* Wired Tiger does not support 0 keys. */
-        continue;
+        continue; /* Wired Tiger does not support 0 keys. */
       }
       snprintf(key, sizeof(key), "%016d", k);
       cursor->set_key(cursor, key);
+	  read++;
       if (cursor->search(cursor) == 0) {
        found++;
       }
@@ -1057,7 +1119,7 @@ repeat:
     }
     cursor->close(cursor);
     char msg[100];
-    snprintf(msg, sizeof(msg), "(%d of %d found)", found, num_);
+    snprintf(msg, sizeof(msg), "(%zd of %zd found)", found, read);
     thread->stats.AddMessage(msg);
   }
 
@@ -1108,12 +1170,15 @@ repeat:
       fprintf(stderr, "open_cursor error: %s\n", wiredtiger_strerror(ret));
       exit(1);
     }
-    int found = 0;
-    for (int i = 0; i < reads_; i++) {
+    size_t read = 0;
+    size_t found = 0;
+	Duration duration(FLAGS_duration, reads_);
+	while (!duration.Done(1)) {
       char key[100];
       const int k = thread->rand.Next() % FLAGS_num;
       snprintf(key, sizeof(key), "%016d", k);
       cursor->set_key(cursor, key);
+	  read++;
       if(cursor->search(cursor) == 0) {
         found++;
       }
@@ -1121,7 +1186,7 @@ repeat:
     }
     cursor->close(cursor);
     char msg[100];
-    snprintf(msg, sizeof(msg), "(%d of %d found)", found, num_);
+    snprintf(msg, sizeof(msg), "(%zd of %zd found)", found, read);
     thread->stats.AddMessage(msg);
   }
 
@@ -1141,13 +1206,11 @@ repeat:
       txn_config << ",sync=full";
     else
       txn_config << ",sync=none";
-    for (int i = 0; i < num_; i += entries_per_batch_) {
+	Duration duration(seq ? 0 : FLAGS_duration, num_);
+	int64_t i = 0;
+    while (!duration.Done(entries_per_batch_)) {
       for (int j = 0; j < entries_per_batch_; j++) {
-#ifdef RAND_SHUFFLE
-        int k = seq ? i+j : shuff[i+j];
-#else
-        int k = seq ? i+j : (thread->rand.Next() % FLAGS_num);
-#endif
+        int k = seq ? i+j : shuff ? shuff[i+j] : (thread->rand.Next() % FLAGS_num);
         char key[100];
         snprintf(key, sizeof(key), "%016d", k);
         if (k == 0)
@@ -1162,6 +1225,7 @@ repeat:
         thread->stats.FinishedSingleOp();
         bytes += strlen(key);
       }
+	  i += entries_per_batch_;
     }
     cursor->close(cursor);
     thread->stats.AddBytes(bytes);
@@ -1179,13 +1243,38 @@ repeat:
     if (thread->tid > 0) {
       ReadRandom(thread);
     } else {
-      // Special thread that keeps writing until other threads are done.
-      RandomGenerator gen;
+      BGWriter(thread);
+	}
+  }
+
+  void BGWriter(ThreadState *thread) {
+    // Special thread that keeps writing until other threads are done.
+    RandomGenerator gen;
+	double last = Env::Default()->NowMicros();
+	int writes_per_second_by_10 = 0;
+	int num_writes = 0;
+
+	// --writes_per_second rate limit is enforced per 100 milliseconds
+	// intervals to avoid a burst of writes at the start of each second.
+	if (FLAGS_writes_per_second > 0)
+		writes_per_second_by_10 = FLAGS_writes_per_second / 10;
+
+	// Don't merge stats from this thread with the readers.
+	thread->stats.SetExcludeFromMerge();
+
       while (true) {
         {
           MutexLock l(&thread->shared->mu);
           if (thread->shared->num_done + 1 >= thread->shared->num_initialized) {
             // Other threads have finished
+		  // Report and wipe out our own stats
+		  char buf[100];
+		  snprintf(buf, sizeof(buf), "(desired %d ops/sec)",
+			FLAGS_writes_per_second);
+		  thread->stats.Stop();
+		  thread->stats.AddMessage(buf);
+		  thread->stats.Report(Slice("writer"));
+		  thread->stats.Start(thread->tid);
             break;
           }
         }
@@ -1212,10 +1301,21 @@ repeat:
           exit(1);
         }
         cursor->close(cursor);
-      }
+		thread->stats.FinishedSingleOp();
 
-      // Do not count any of the preceding work/delay in stats.
-      thread->stats.Start();
+	  ++num_writes;
+	  if (writes_per_second_by_10 && num_writes >= writes_per_second_by_10) {
+		double now = Env::Default()->NowMicros();
+		double usecs_since_last = now - last;
+
+		num_writes = 0;
+		last = now;
+
+		if (usecs_since_last < 100000.0) {
+		  Env::Default()->SleepForMicroseconds(100000.0 - usecs_since_last);
+		  last = Env::Default()->NowMicros();
+		}
+      }
     }
   }
 
@@ -1348,6 +1448,12 @@ int main(int argc, char** argv) {
       FLAGS_stagger = n;
     } else if (sscanf(argv[i], "--threads=%d%c", &n, &junk) == 1) {
       FLAGS_threads = n;
+    } else if (sscanf(argv[i], "--duration=%d%c", &n, &junk) == 1) {
+      FLAGS_duration = n;
+    } else if (sscanf(argv[i], "--stats_interval=%d%c", &n, &junk) == 1) {
+      FLAGS_stats_interval = n;
+    } else if (sscanf(argv[i], "--writes_per_second=%d%c", &n, &junk) == 1) {
+      FLAGS_writes_per_second = n;
     } else if (sscanf(argv[i], "--value_size=%d%c", &n, &junk) == 1) {
       FLAGS_value_size = n;
     } else if (sscanf(argv[i], "--write_buffer_size=%d%c", &n, &junk) == 1) {
@@ -1360,6 +1466,9 @@ int main(int argc, char** argv) {
       FLAGS_open_files = n;
     } else if (strncmp(argv[i], "--db=", 5) == 0) {
       FLAGS_db = argv[i] + 5;
+    } else if (sscanf(argv[i], "--shuffle=%d%c", &n, &junk) == 1 &&
+               (n == 0 || n == 1)) {
+      FLAGS_shuffle = n;
     } else {
       fprintf(stderr, "Invalid flag '%s'\n", argv[i]);
       exit(1);
@@ -1373,11 +1482,11 @@ int main(int argc, char** argv) {
       FLAGS_db = default_db_path.c_str();
   }
 
-#ifdef RAND_SHUFFLE
+  if (FLAGS_shuffle) {
   shuff = (int *)malloc(FLAGS_num * sizeof(int));
   for (int i=0; i<FLAGS_num; i++)
       shuff[i] = i;
-#endif
+  }
   leveldb::Benchmark benchmark;
   benchmark.Run();
   return 0;
