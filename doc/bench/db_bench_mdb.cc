@@ -6,6 +6,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 #include <lmdb.h>
 #include "port/port.h"
 #include "util/histogram.h"
@@ -71,6 +72,10 @@ static int FLAGS_duration = 0;
 // Per-thread rate limit on writes per second.
 // Only for the readwhilewriting test.
 static int FLAGS_writes_per_second;
+
+// Stats are reported every N operations when this is
+// greater than zero. When 0 the interval grows over time.
+static int FLAGS_stats_interval = 0;
 
 // Size of each value
 static int FLAGS_value_size = 100;
@@ -172,29 +177,35 @@ static void AppendWithSpace(std::string* str, Slice msg) {
 
 class Stats {
  private:
+  int id_;
   double start_;
   double finish_;
   double seconds_;
   size_t done_;
+  size_t last_report_done_;
   int64_t next_report_;
   int64_t bytes_;
   double last_op_finish_;
+  double last_report_finish_;
   Histogram hist_;
   std::string message_;
   bool exclude_from_merge_;
 
  public:
-  Stats() { Start(); }
+  Stats() { Start(-1); }
 
-  void Start() {
-    next_report_ = 100;
+  void Start(int id) {
+    id_ = id;
+    next_report_ = FLAGS_stats_interval ? FLAGS_stats_interval : 100;
     last_op_finish_ = start_;
     hist_.Clear();
     done_ = 0;
+	last_report_done_ = 0;
     bytes_ = 0;
     seconds_ = 0;
     start_ = Env::Default()->NowMicros();
     finish_ = start_;
+	last_report_finish_ = start_;
     message_.clear();
 	// When set, stats from this thread won't be merged with others.
 	exclude_from_merge_ = false;
@@ -226,6 +237,14 @@ class Stats {
 
   void SetExcludeFromMerge() { exclude_from_merge_ = true; }
 
+  void TimeStr(time_t seconds, char *buf) {
+	struct tm tm;
+	localtime_r(&seconds, &tm);
+	sprintf(buf, "%04d/%02d/%02d-%02d:%02d:%02d",
+		tm.tm_year+1900, tm.tm_mon+1, tm.tm_mday,
+		tm.tm_hour, tm.tm_min, tm.tm_sec);
+  }
+
   void FinishedSingleOp() {
     if (FLAGS_histogram) {
       double now = Env::Default()->NowMicros();
@@ -240,6 +259,7 @@ class Stats {
 
     done_++;
     if (done_ >= next_report_) {
+	  if (!FLAGS_stats_interval) {
       if      (next_report_ < 1000)   next_report_ += 100;
       else if (next_report_ < 5000)   next_report_ += 500;
       else if (next_report_ < 10000)  next_report_ += 1000;
@@ -249,6 +269,26 @@ class Stats {
       else                            next_report_ += 100000;
       fprintf(stderr, "... finished %zd ops%30s\r", done_, "");
       fflush(stderr);
+	  } else {
+        double now = Env::Default()->NowMicros();
+		char buf[20];
+		TimeStr((int) (now/1000000), buf);
+        fprintf(stderr,
+                "%s ... thread %d: (%zd,%zd) ops and "
+                "(%.1f,%.1f) ops/second in (%.6f,%.6f) seconds\n",
+                buf,
+                id_,
+                done_ - last_report_done_, done_,
+                (done_ - last_report_done_) /
+                ((now - last_report_finish_) / 1000000.0),
+                done_ / ((now - start_) / 1000000.0),
+                (now - last_report_finish_) / 1000000.0,
+                (now - start_) / 1000000.0);
+        fflush(stderr);
+        next_report_ += FLAGS_stats_interval;
+        last_report_finish_ = now;
+        last_report_done_ = done_;
+	  }
     }
   }
 
@@ -633,7 +673,7 @@ class Benchmark {
       }
     }
 
-    thread->stats.Start();
+    thread->stats.Start(thread->tid);
     (arg->bm->*(arg->method))(thread);
     thread->stats.Stop();
 
@@ -964,6 +1004,8 @@ int main(int argc, char** argv) {
       FLAGS_threads = n;
     } else if (sscanf(argv[i], "--duration=%d%c", &n, &junk) == 1) {
       FLAGS_duration = n;
+    } else if (sscanf(argv[i], "--stats_interval=%d%c", &n, &junk) == 1) {
+      FLAGS_stats_interval = n;
     } else if (sscanf(argv[i], "--writes_per_second=%d%c", &n, &junk) == 1) {
       FLAGS_writes_per_second = n;
     } else if (sscanf(argv[i], "--value_size=%d%c", &n, &junk) == 1) {
