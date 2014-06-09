@@ -917,6 +917,14 @@ class Benchmark {
 		MutexLock l(&thread->shared->mu);
 		if (thread->shared->num_done + 1 >= thread->shared->num_initialized) {
 		  // Other threads have finished
+		  // Report and wipe out our own stats
+		  char buf[100];
+		  snprintf(buf, sizeof(buf), "(desired %d ops/sec)",
+			FLAGS_writes_per_second);
+		  thread->stats.Stop();
+		  thread->stats.AddMessage(buf);
+		  thread->stats.Report(Slice("writer"));
+		  thread->stats.Start(thread->tid);
 		  break;
 		}
 	  }
