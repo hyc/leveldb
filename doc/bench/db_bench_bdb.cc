@@ -756,6 +756,7 @@ class Benchmark {
 	  }
 	  txn->commit(txn, 0);
 	  i += entries_per_batch_;
+	  db_->txn_checkpoint(db_,81920,1,0);
     }
 	thread->stats.AddBytes(bytes);
   }
@@ -878,6 +879,7 @@ class Benchmark {
 		exit(1);
 	  }
 	  thread->stats.FinishedSingleOp();
+	  db_->txn_checkpoint(db_,81920,1,0);
 
 	  ++num_writes;
 	  if (writes_per_second_by_10 && num_writes >= writes_per_second_by_10) {
