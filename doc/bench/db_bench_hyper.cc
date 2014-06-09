@@ -648,7 +648,7 @@ class Benchmark {
 	  std::string test_dir;
 	  Env::Default()->GetTestDirectory(&test_dir);
 	  sprintf(cmd, "du %s", test_dir.c_str());
-	  system(cmd);
+	  if (system(cmd)) exit(1);
 	}
       }
     }

@@ -430,7 +430,7 @@ class Benchmark {
 	  std::string test_dir;
 	  Env::Default()->GetTestDirectory(&test_dir);
 	  sprintf(cmd, "du %s", test_dir.c_str());
-	  system(cmd);
+	  if (system(cmd)) exit(1);
 	}
       }
     }
@@ -452,7 +452,7 @@ class Benchmark {
              db_num_);
 
     sprintf(cmd, "mkdir -p %s", file_name);
-    system(cmd);
+	if (system(cmd)) exit(1);
 
     int env_opt = DB_AUTO_COMMIT; //DB_REGION_INIT;
 
@@ -501,7 +501,7 @@ class Benchmark {
 		  sprintf(cmd, "rm -rf %s*", FLAGS_db);
 		  dbh_->close(dbh_, 0);
 		  db_->close(db_, 0);
-		  system(cmd);
+		  if (system(cmd)) exit(1);
 		  db_ = NULL;
 		  dbh_ = NULL;
 	  }

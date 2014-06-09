@@ -449,7 +449,7 @@ class Benchmark {
 	  std::string test_dir;
 	  Env::Default()->GetTestDirectory(&test_dir);
 	  sprintf(cmd, "du %s/*", test_dir.c_str());
-	  system(cmd);
+	  if (system(cmd)) exit(1);
 	}
       }
     }
@@ -528,7 +528,7 @@ class Benchmark {
       {
         char cmd[200];
 	sprintf(cmd, "rm -rf %s*", FLAGS_db);
-	system(cmd);
+	if (system(cmd)) exit(1);
       }
       db_ = NULL;
       Open();

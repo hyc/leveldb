@@ -433,7 +433,7 @@ class Benchmark {
 	  std::string test_dir;
 	  Env::Default()->GetTestDirectory(&test_dir);
 	  sprintf(cmd, "du %s", test_dir.c_str());
-	  system(cmd);
+	  if (system(cmd)) exit(1);
 	}
       }
     }
@@ -454,7 +454,7 @@ class Benchmark {
              db_num_);
 
 	sprintf(cmd, "mkdir -p %s", file_name);
-	system(cmd);
+	if (system(cmd)) exit(1);
 
     // Create tuning options and open the database
 	db_ = sp_env();
@@ -481,7 +481,7 @@ class Benchmark {
 		  sprintf(cmd, "rm -rf %s*", FLAGS_db);
 		  sp_destroy(dbi_);
 		  sp_destroy(db_);
-		  system(cmd);
+		  if (system(cmd)) exit(1);
 		  db_ = NULL;
 	  }
       Open(flags);

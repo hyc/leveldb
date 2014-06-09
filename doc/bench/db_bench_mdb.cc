@@ -630,7 +630,7 @@ class Benchmark {
 		  char cmd[200];
 		  sprintf(cmd, "rm -rf %s*", FLAGS_db);
 		  mdb_env_close(db_);
-		  system(cmd);
+		  if (system(cmd)) exit(1);
 		  db_ = NULL;
 	  }
     }
@@ -644,7 +644,7 @@ class Benchmark {
 		  std::string test_dir;
 		  Env::Default()->GetTestDirectory(&test_dir);
 		  sprintf(cmd, "du %s", test_dir.c_str());
-		  system(cmd);
+		  if (system(cmd)) exit(1);
 		}
     }
     }
@@ -742,7 +742,7 @@ class Benchmark {
              db_num_);
 
 	sprintf(cmd, "mkdir -p %s", file_name);
-	system(cmd);
+	if (system(cmd)) exit(1);
 
 	int env_opt = 0;
 	size_t msize;
