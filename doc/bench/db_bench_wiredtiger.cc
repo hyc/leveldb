@@ -471,8 +471,6 @@ class Benchmark {
   void PrintEnvironment() {
     int wtmaj, wtmin, wtpatch;
     const char *wtver = wiredtiger_version(&wtmaj, &wtmin, &wtpatch);
-    fprintf(stdout, "WiredTiger:    version %s, lib ver %d, lib rev %d patch %d\n",
-      wtver, wtmaj, wtmin, wtpatch);
     fprintf(stderr, "WiredTiger:    version %s, lib ver %d, lib rev %d patch %d\n",
       wtver, wtmaj, wtmin, wtpatch);
 
