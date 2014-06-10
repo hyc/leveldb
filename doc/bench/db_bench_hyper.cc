@@ -103,8 +103,9 @@ static bool FLAGS_histogram = false;
 static int FLAGS_write_buffer_size = 0;
 
 // Number of bytes to use as a cache of uncompressed data.
-// Negative means use default settings.
-static int FLAGS_cache_size = -1;
+static size_t FLAGS_cache_size = 0;
+// Was a cache_size set?
+static bool FLAGS_cache_set = false;
 
 // Maximum number of files to keep open at the same time (use default if == 0)
 static int FLAGS_open_files = 0;
@@ -490,7 +491,7 @@ class Benchmark {
 
  public:
   Benchmark()
-  : cache_(FLAGS_cache_size >= 0 ? NewLRUCache(FLAGS_cache_size) : NULL),
+  : cache_(FLAGS_cache_set ? NewLRUCache(FLAGS_cache_size) : NULL),
     filter_policy_(FLAGS_bloom_bits >= 0
                    ? NewBloomFilterPolicy(FLAGS_bloom_bits)
                    : NULL),
@@ -1109,43 +1110,44 @@ int main(int argc, char** argv) {
 
   for (int i = 1; i < argc; i++) {
     double d;
-    int n;
+    size_t n;
     char junk;
     if (leveldb::Slice(argv[i]).starts_with("--benchmarks=")) {
       FLAGS_benchmarks = argv[i] + strlen("--benchmarks=");
     } else if (sscanf(argv[i], "--compression_ratio=%lf%c", &d, &junk) == 1) {
       FLAGS_compression_ratio = d;
-    } else if (sscanf(argv[i], "--histogram=%d%c", &n, &junk) == 1 &&
+    } else if (sscanf(argv[i], "--histogram=%zd%c", &n, &junk) == 1 &&
                (n == 0 || n == 1)) {
       FLAGS_histogram = n;
-    } else if (sscanf(argv[i], "--use_existing_db=%d%c", &n, &junk) == 1 &&
+    } else if (sscanf(argv[i], "--use_existing_db=%zd%c", &n, &junk) == 1 &&
                (n == 0 || n == 1)) {
       FLAGS_use_existing_db = n;
-    } else if (sscanf(argv[i], "--num=%d%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--num=%zd%c", &n, &junk) == 1) {
       FLAGS_num = n;
-    } else if (sscanf(argv[i], "--reads=%d%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--reads=%zd%c", &n, &junk) == 1) {
       FLAGS_reads = n;
-    } else if (sscanf(argv[i], "--threads=%d%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--threads=%zd%c", &n, &junk) == 1) {
       FLAGS_threads = n;
-    } else if (sscanf(argv[i], "--duration=%d%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--duration=%zd%c", &n, &junk) == 1) {
       FLAGS_duration = n;
-    } else if (sscanf(argv[i], "--stats_interval=%d%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--stats_interval=%zd%c", &n, &junk) == 1) {
       FLAGS_stats_interval = n;
-    } else if (sscanf(argv[i], "--writes_per_second=%d%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--writes_per_second=%zd%c", &n, &junk) == 1) {
       FLAGS_writes_per_second = n;
-    } else if (sscanf(argv[i], "--value_size=%d%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--value_size=%zd%c", &n, &junk) == 1) {
       FLAGS_value_size = n;
-    } else if (sscanf(argv[i], "--write_buffer_size=%d%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--write_buffer_size=%zd%c", &n, &junk) == 1) {
       FLAGS_write_buffer_size = n;
-    } else if (sscanf(argv[i], "--cache_size=%d%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--cache_size=%zd%c", &n, &junk) == 1) {
       FLAGS_cache_size = n;
-    } else if (sscanf(argv[i], "--bloom_bits=%d%c", &n, &junk) == 1) {
+	  FLAGS_cache_set = true;
+    } else if (sscanf(argv[i], "--bloom_bits=%zd%c", &n, &junk) == 1) {
       FLAGS_bloom_bits = n;
-    } else if (sscanf(argv[i], "--open_files=%d%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--open_files=%zd%c", &n, &junk) == 1) {
       FLAGS_open_files = n;
     } else if (strncmp(argv[i], "--db=", 5) == 0) {
       FLAGS_db = argv[i] + 5;
-    } else if (sscanf(argv[i], "--shuffle=%d%c", &n, &junk) == 1 &&
+    } else if (sscanf(argv[i], "--shuffle=%zd%c", &n, &junk) == 1 &&
                (n == 0 || n == 1)) {
       FLAGS_shuffle = n;
     } else {
@@ -1166,6 +1168,7 @@ int main(int argc, char** argv) {
 	  for (int i=0; i<FLAGS_num; i++)
 		shuff[i] = i;
   }
+  unsetenv("LD_LIBRARY_PATH");
   leveldb::Benchmark benchmark;
   benchmark.Run();
   return 0;

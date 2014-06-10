@@ -101,8 +101,9 @@ static bool FLAGS_histogram = false;
 static int FLAGS_write_buffer_size = 0;
 
 // Number of bytes to use as a cache of uncompressed data.
-// Negative means use default settings.
-static int FLAGS_cache_size = -1;
+static size_t FLAGS_cache_size = 0;
+// Was a cache_size set?
+static bool FLAGS_cache_set = false;
 
 // Maximum number of files to keep open at the same time (use default if == 0)
 static int FLAGS_open_files = 0;
@@ -862,7 +863,7 @@ class Benchmark {
     config.str("");
     if (!FLAGS_use_existing_db)
       config << "create";
-    if (FLAGS_cache_size > 0)
+    if (FLAGS_cache_set)
       config << ",cache_size=" << FLAGS_cache_size;
     /* TODO: Translate write_buffer_size - maybe it's chunk size?
     options.write_buffer_size = FLAGS_write_buffer_size;
@@ -890,15 +891,15 @@ class Benchmark {
       config << "key_format=S,value_format=S";
       config << ",prefix_compression=false";
       config << ",checksum=off";
-      if (FLAGS_cache_size < SMALL_CACHE && FLAGS_cache_size > 0) {
+      if (FLAGS_cache_size < SMALL_CACHE && FLAGS_cache_set) {
           config << ",internal_page_max=4kb";
           config << ",leaf_page_max=4kb";
         config << ",memory_page_max=" << FLAGS_cache_size;
       } else {
           config << ",internal_page_max=16kb";
           config << ",leaf_page_max=16kb";
-        if (FLAGS_cache_size > 0) {
-          int memmax = FLAGS_cache_size * 0.75;
+        if (FLAGS_cache_set) {
+          size_t memmax = FLAGS_cache_size * 0.75;
           config << ",memory_page_max=" << memmax;
         }
       }
@@ -1420,51 +1421,52 @@ int main(int argc, char** argv) {
 
   for (int i = 1; i < argc; i++) {
     double d;
-    int n;
+    size_t n;
     char junk;
     if (leveldb::Slice(argv[i]).starts_with("--benchmarks=")) {
       FLAGS_benchmarks = argv[i] + strlen("--benchmarks=");
     } else if (sscanf(argv[i], "--compression_ratio=%lf%c", &d, &junk) == 1) {
       FLAGS_compression_ratio = d;
-    } else if (sscanf(argv[i], "--histogram=%d%c", &n, &junk) == 1 &&
+    } else if (sscanf(argv[i], "--histogram=%zd%c", &n, &junk) == 1 &&
                (n == 0 || n == 1)) {
       FLAGS_histogram = n;
-    } else if (sscanf(argv[i], "--use_lsm=%d%c", &n, &junk) == 1 &&
+    } else if (sscanf(argv[i], "--use_lsm=%zd%c", &n, &junk) == 1 &&
                (n == 0 || n == 1)) {
       FLAGS_use_lsm = n;
-    } else if (sscanf(argv[i], "--use_existing_db=%d%c", &n, &junk) == 1 &&
+    } else if (sscanf(argv[i], "--use_existing_db=%zd%c", &n, &junk) == 1 &&
                (n == 0 || n == 1)) {
       FLAGS_use_existing_db = n;
-    } else if (sscanf(argv[i], "--max_compact_wait=%d%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--max_compact_wait=%zd%c", &n, &junk) == 1) {
       FLAGS_max_compact_wait = n;
-    } else if (sscanf(argv[i], "--num=%d%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--num=%zd%c", &n, &junk) == 1) {
       FLAGS_num = n;
-    } else if (sscanf(argv[i], "--reads=%d%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--reads=%zd%c", &n, &junk) == 1) {
       FLAGS_reads = n;
-    } else if (sscanf(argv[i], "--stagger=%d%c", &n, &junk) == 1 &&
+    } else if (sscanf(argv[i], "--stagger=%zd%c", &n, &junk) == 1 &&
                (n == 0 || n == 1)) {
       FLAGS_stagger = n;
-    } else if (sscanf(argv[i], "--threads=%d%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--threads=%zd%c", &n, &junk) == 1) {
       FLAGS_threads = n;
-    } else if (sscanf(argv[i], "--duration=%d%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--duration=%zd%c", &n, &junk) == 1) {
       FLAGS_duration = n;
-    } else if (sscanf(argv[i], "--stats_interval=%d%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--stats_interval=%zd%c", &n, &junk) == 1) {
       FLAGS_stats_interval = n;
-    } else if (sscanf(argv[i], "--writes_per_second=%d%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--writes_per_second=%zd%c", &n, &junk) == 1) {
       FLAGS_writes_per_second = n;
-    } else if (sscanf(argv[i], "--value_size=%d%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--value_size=%zd%c", &n, &junk) == 1) {
       FLAGS_value_size = n;
-    } else if (sscanf(argv[i], "--write_buffer_size=%d%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--write_buffer_size=%zd%c", &n, &junk) == 1) {
       FLAGS_write_buffer_size = n;
-    } else if (sscanf(argv[i], "--cache_size=%d%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--cache_size=%zd%c", &n, &junk) == 1) {
       FLAGS_cache_size = n;
-    } else if (sscanf(argv[i], "--bloom_bits=%d%c", &n, &junk) == 1) {
+	  FLAGS_cache_set = true;
+    } else if (sscanf(argv[i], "--bloom_bits=%zd%c", &n, &junk) == 1) {
       FLAGS_bloom_bits = n;
-    } else if (sscanf(argv[i], "--open_files=%d%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--open_files=%zd%c", &n, &junk) == 1) {
       FLAGS_open_files = n;
     } else if (strncmp(argv[i], "--db=", 5) == 0) {
       FLAGS_db = argv[i] + 5;
-    } else if (sscanf(argv[i], "--shuffle=%d%c", &n, &junk) == 1 &&
+    } else if (sscanf(argv[i], "--shuffle=%zd%c", &n, &junk) == 1 &&
                (n == 0 || n == 1)) {
       FLAGS_shuffle = n;
     } else {
@@ -1485,6 +1487,7 @@ int main(int argc, char** argv) {
   for (int i=0; i<FLAGS_num; i++)
       shuff[i] = i;
   }
+  unsetenv("LD_LIBRARY_PATH");
   leveldb::Benchmark benchmark;
   benchmark.Run();
   return 0;

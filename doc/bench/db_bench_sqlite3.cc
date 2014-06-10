@@ -786,6 +786,7 @@ int main(int argc, char** argv) {
 	  for (int i=0; i<FLAGS_num; i++)
 	   shuff[i] = i;
   }
+  unsetenv("LD_LIBRARY_PATH");
   leveldb::Benchmark benchmark;
   benchmark.Run();
   return 0;

@@ -720,6 +720,11 @@ class Benchmark {
       arg[0].thread->stats.Merge(arg[i].thread->stats);
     }
     arg[0].thread->stats.Report(name);
+#if 0
+	char buf[1<<14];
+	db_->get_engine_status_text(db_, buf, sizeof(buf));
+	fprintf(stdout, "%s", buf);
+#endif
 
     for (int i = 0; i < n; i++) {
       delete arg[i].thread;
@@ -752,8 +757,8 @@ class Benchmark {
     // Create tuning options and open the database
 	rc = db_env_create(&db_, 0);
 	rc =db_->set_flags(db_, env_opt, 1);
+	rc = db_->set_cachesize(db_, FLAGS_cache_size / (1 << 30), FLAGS_cache_size % (1 << 30), 1);
     rc = db_->set_lk_max_memory(db_, FLAGS_lk_max_memory);
-    rc = db_->set_cachesize(db_, FLAGS_cache_size / (1 << 30), FLAGS_cache_size % (1 << 30), 1);
 	txn_flags =	DB_INIT_LOCK|DB_INIT_LOG|DB_INIT_TXN|DB_INIT_MPOOL|DB_THREAD|DB_PRIVATE|DB_CREATE;
 	rc = db_->open(db_, file_name, txn_flags, 0664);
 	if (rc) {
@@ -975,48 +980,48 @@ int main(int argc, char** argv) {
   std::string default_db_path;
   for (int i = 1; i < argc; i++) {
     double d;
-    long long n;
+    size_t n;
     char junk;
     if (leveldb::Slice(argv[i]).starts_with("--benchmarks=")) {
       FLAGS_benchmarks = argv[i] + strlen("--benchmarks=");
     } else if (sscanf(argv[i], "--compression_ratio=%lf%c", &d, &junk) == 1) {
       FLAGS_compression_ratio = d;
-    } else if (sscanf(argv[i], "--histogram=%lld%c", &n, &junk) == 1 &&
+    } else if (sscanf(argv[i], "--histogram=%zd%c", &n, &junk) == 1 &&
                (n == 0 || n == 1)) {
       FLAGS_histogram = n;
-    } else if (sscanf(argv[i], "--use_existing_db=%lld%c", &n, &junk) == 1 &&
+    } else if (sscanf(argv[i], "--use_existing_db=%zd%c", &n, &junk) == 1 &&
                (n == 0 || n == 1)) {
       FLAGS_use_existing_db = n;
-    } else if (sscanf(argv[i], "--num=%lld%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--num=%zd%c", &n, &junk) == 1) {
       FLAGS_num = n;
-    } else if (sscanf(argv[i], "--batch=%lld%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--batch=%zd%c", &n, &junk) == 1) {
       FLAGS_batch = n;
-    } else if (sscanf(argv[i], "--reads=%lld%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--reads=%zd%c", &n, &junk) == 1) {
       FLAGS_reads = n;
-    } else if (sscanf(argv[i], "--threads=%lld%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--threads=%zd%c", &n, &junk) == 1) {
       FLAGS_threads = n;
-    } else if (sscanf(argv[i], "--duration=%lld%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--duration=%zd%c", &n, &junk) == 1) {
       FLAGS_duration = n;
-    } else if (sscanf(argv[i], "--stats_interval=%lld%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--stats_interval=%zd%c", &n, &junk) == 1) {
       FLAGS_stats_interval = n;
-    } else if (sscanf(argv[i], "--writes_per_second=%lld%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--writes_per_second=%zd%c", &n, &junk) == 1) {
       FLAGS_writes_per_second = n;
-    } else if (sscanf(argv[i], "--value_size=%lld%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--value_size=%zd%c", &n, &junk) == 1) {
       FLAGS_value_size = n;
-    } else if (sscanf(argv[i], "--cache_size=%lld%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--cache_size=%zd%c", &n, &junk) == 1) {
       FLAGS_cache_size = n;
     } else if (strncmp(argv[i], "--db=", 5) == 0) {
       FLAGS_db = argv[i] + 5;
-    } else if (sscanf(argv[i], "--shuffle=%lld%c", &n, &junk) == 1 &&
+    } else if (sscanf(argv[i], "--shuffle=%zd%c", &n, &junk) == 1 &&
                (n == 0 || n == 1)) {
       FLAGS_shuffle = n;
-    } else if (sscanf(argv[i], "--node_size=%lld%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--node_size=%zd%c", &n, &junk) == 1) {
       FLAGS_node_size = n;
-    } else if (sscanf(argv[i], "--basement_node_size=%lld%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--basement_node_size=%zd%c", &n, &junk) == 1) {
       FLAGS_basement_node_size = n;
-    } else if (sscanf(argv[i], "--sync_period=%lld%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--sync_period=%zd%c", &n, &junk) == 1) {
       FLAGS_sync_period = n;
-    } else if (sscanf(argv[i], "--direct_io=%lld%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--direct_io=%zd%c", &n, &junk) == 1) {
       FLAGS_direct_io = (n != 0);
     } else {
       fprintf(stderr, "Invalid flag '%s'\n", argv[i]);
@@ -1036,6 +1041,7 @@ int main(int argc, char** argv) {
 	  for (int i=0; i<FLAGS_num; i++)
 	   shuff[i] = i;
   }
+  unsetenv("LD_LIBRARY_PATH");
   leveldb::Benchmark benchmark;
   benchmark.Run();
   return 0;

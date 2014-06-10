@@ -717,6 +717,7 @@ int main(int argc, char** argv) {
       FLAGS_db = default_db_path.c_str();
   }
 
+  unsetenv("LD_LIBRARY_PATH");
   leveldb::Benchmark benchmark;
   benchmark.Run();
   return 0;
