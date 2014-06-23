@@ -25,8 +25,6 @@
 //   fillseqbatch  -- batch write N values in sequential key order in async mode
 //   fillrandsync  -- write N/100 values in random key order in sync mode
 //   fillrandbatch  -- batch write N values in random key order in async mode
-//   fillrandibatch  -- batch write N values in random binary key order in async mode
-//   fillrand100K  -- write N/1000 100K values in random order in async mode
 //   fillseq100K   -- write N/1000 100K values in seq order in async mode
 //   readseq       -- read N times sequentially
 //   readreverse   -- read N times in reverse order
@@ -109,6 +107,9 @@ static bool FLAGS_writemap = true;
 
 // The Linux kernel does readahead by default
 static bool FLAGS_readahead = true;
+
+// If true, use binary integer keys
+static bool FLAGS_intkey = false;
 
 // Use the db with the following name.
 static const char* FLAGS_db = NULL;
@@ -401,8 +402,7 @@ class Benchmark {
   };
   enum DBFlags {
     NONE = 0,
-	SYNC,
-	INT
+	SYNC
   };
 
  private:
@@ -417,7 +417,7 @@ class Benchmark {
   Order write_order_;
 
   void PrintHeader() {
-    const int kKeySize = 16;
+    const int kKeySize = FLAGS_intkey ? sizeof(int) : 16;
     PrintEnvironment();
     fprintf(stdout, "Keys:       %d bytes each\n", kKeySize);
     fprintf(stdout, "Values:     %d bytes each (%d bytes after compression)\n",
@@ -549,17 +549,6 @@ class Benchmark {
       } else if (name == Slice("fillrandbatch")) {
 		fresh_db = true;
 		write_order_ = RANDOM;
-		entries_per_batch_ = FLAGS_batch;
-		method = &Benchmark::Write;
-      } else if (name == Slice("fillrandint")) {
-		fresh_db = true;
-		write_order_ = RANDOM;
-		dbflags_ = INT;
-		method = &Benchmark::Write;
-      } else if (name == Slice("fillrandibatch")) {
-		fresh_db = true;
-		write_order_ = RANDOM;
-		dbflags_ = INT;
 		entries_per_batch_ = FLAGS_batch;
 		method = &Benchmark::Write;
       } else if (name == Slice("overwrite")) {
@@ -769,7 +758,7 @@ class Benchmark {
       fprintf(stderr, "open error: %s\n", mdb_strerror(rc));
     }
 	rc = mdb_txn_begin(db_, NULL, 0, &txn);
-	rc = mdb_open(txn, NULL, flags == INT ? MDB_INTEGERKEY:0, &dbi_);
+	rc = mdb_open(txn, NULL, FLAGS_intkey ? MDB_INTEGERKEY:0, &dbi_);
 	rc = mdb_txn_commit(txn);
   }
 
@@ -791,7 +780,7 @@ class Benchmark {
 	MDB_txn *txn;
 	char key[100];
 	int ikey, flag = 0;
-	if (dbflags_ == INT) {
+	if (FLAGS_intkey) {
 		mkey.mv_data = &ikey;
 		mkey.mv_size = sizeof(ikey);
 	} else {
@@ -813,7 +802,7 @@ class Benchmark {
 
       const int k = (write_order_ == SEQUENTIAL) ? i+j : (shuff ? shuff[i+j] : (thread->rand.Next() % FLAGS_num));
 	  int rc;
-	  if (dbflags_ == INT)
+	  if (FLAGS_intkey)
 	  	  ikey = k;
 	  else
 		  mkey.mv_size = snprintf(key, sizeof(key), "%016d", k);
@@ -876,7 +865,14 @@ class Benchmark {
 	size_t read = 0;
 	size_t found = 0;
     char ckey[100];
-	key.mv_data = ckey;
+	int ikey;
+
+	if (FLAGS_intkey) {
+		key.mv_data = &ikey;
+		key.mv_size = sizeof(ikey);
+	} else {
+		key.mv_data = ckey;
+	}
 
 	mdb_txn_begin(db_, NULL, MDB_RDONLY, &txn);
 	mdb_cursor_open(txn, dbi_, &cursor);
@@ -884,7 +880,10 @@ class Benchmark {
 	Duration duration(FLAGS_duration, reads_);
     while (!duration.Done(1)) {
       const int k = thread->rand.Next() % FLAGS_num;
-      key.mv_size = snprintf(ckey, sizeof(ckey), "%016d", k);
+	  if (FLAGS_intkey)
+		  ikey = k;
+	  else
+		  key.mv_size = snprintf(ckey, sizeof(ckey), "%016d", k);
 	  mdb_txn_renew(txn);
 	  read++;
 	  if (!mdb_cursor_get(cursor, &key, &data, MDB_SET))
@@ -941,11 +940,18 @@ class Benchmark {
 
 	  MDB_val mkey, mval;
 	  MDB_txn *txn;
-	  const int k = thread->rand.Next() % FLAGS_num;
 	  char key[100];
-	  int rc;
-	  mkey.mv_data = key;
-	  mkey.mv_size = snprintf(key, sizeof(key), "%016d", k);
+	  const int k = thread->rand.Next() % FLAGS_num;
+	  int rc, ikey;
+
+	  if (FLAGS_intkey) {
+		mkey.mv_data = &ikey;
+		mkey.mv_size = sizeof(ikey);
+		ikey = k;
+	  } else {
+		mkey.mv_data = key;
+		mkey.mv_size = snprintf(key, sizeof(key), "%016d", k);
+	  }
 	  mval.mv_data = (void *)gen.Generate(value_size_).data();
 	  mval.mv_size = value_size_;
 	  mdb_txn_begin(db_, NULL, 0, &txn);
@@ -1002,6 +1008,9 @@ int main(int argc, char** argv) {
     } else if (sscanf(argv[i], "--writemap=%d%c", &n, &junk) == 1 &&
                (n == 0 || n == 1)) {
       FLAGS_writemap = n;
+    } else if (sscanf(argv[i], "--intkey=%d%c", &n, &junk) == 1 &&
+               (n == 0 || n == 1)) {
+      FLAGS_intkey = n;
     } else if (sscanf(argv[i], "--num=%d%c", &n, &junk) == 1) {
       FLAGS_num = n;
     } else if (sscanf(argv[i], "--batch=%d%c", &n, &junk) == 1) {
