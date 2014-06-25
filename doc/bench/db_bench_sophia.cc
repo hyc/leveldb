@@ -834,7 +834,7 @@ class Benchmark {
       ksz = snprintf(ckey, sizeof(ckey), "%016d", k);
 	  rc = sp_get(dbi_, ckey, ksz, &value, &vsz);
 	  read++;
-		if (!rc)
+	if (rc != -1)
 			found++;
 	  free(value);
       thread->stats.FinishedSingleOp();
