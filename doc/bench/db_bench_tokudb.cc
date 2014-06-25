@@ -450,11 +450,11 @@ class Benchmark {
   }
 
   void PrintEnvironment() {
-    fprintf(stderr, "BerkeleyDB:    version %s\n", DB_VERSION_STRING);
+    fprintf(stderr, "TokuDB:     version %s\n", DB_VERSION_STRING);
 
 #if defined(__linux)
     time_t now = time(NULL);
-    fprintf(stderr, "Date:           %s", ctime(&now));  // ctime() adds newline
+    fprintf(stderr, "Date:       %s", ctime(&now));  // ctime() adds newline
 
     FILE* cpuinfo = fopen("/proc/cpuinfo", "r");
     if (cpuinfo != NULL) {
@@ -477,8 +477,8 @@ class Benchmark {
         }
       }
       fclose(cpuinfo);
-      fprintf(stderr, "CPU:            %d * %s\n", num_cpus, cpu_type.c_str());
-      fprintf(stderr, "CPUCache:       %s\n", cache_size.c_str());
+      fprintf(stderr, "CPU:        %d * %s\n", num_cpus, cpu_type.c_str());
+      fprintf(stderr, "CPUCache:   %s\n", cache_size.c_str());
     }
 #endif
   }

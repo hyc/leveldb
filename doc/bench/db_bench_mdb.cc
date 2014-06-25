@@ -447,11 +447,11 @@ class Benchmark {
   }
 
   void PrintEnvironment() {
-    fprintf(stderr, "MDB:    version %s\n", mdb_version(NULL, NULL, NULL));
+    fprintf(stderr, "LMDB:       version %s\n", mdb_version(NULL, NULL, NULL));
 
 #if defined(__linux)
     time_t now = time(NULL);
-    fprintf(stderr, "Date:           %s", ctime(&now));  // ctime() adds newline
+    fprintf(stderr, "Date:       %s", ctime(&now));  // ctime() adds newline
 
     FILE* cpuinfo = fopen("/proc/cpuinfo", "r");
     if (cpuinfo != NULL) {
@@ -474,8 +474,8 @@ class Benchmark {
         }
       }
       fclose(cpuinfo);
-      fprintf(stderr, "CPU:            %d * %s\n", num_cpus, cpu_type.c_str());
-      fprintf(stderr, "CPUCache:       %s\n", cache_size.c_str());
+      fprintf(stderr, "CPU:        %d * %s\n", num_cpus, cpu_type.c_str());
+      fprintf(stderr, "CPUCache:   %s\n", cache_size.c_str());
     }
 #endif
   }
