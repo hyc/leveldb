@@ -136,6 +136,9 @@ static const char* FLAGS_db = NULL;
 
 static int *shuff = NULL;
 
+// Array of seeds for RNG, one per thread
+static uint32_t *seeds;
+
 namespace leveldb {
 
 namespace {
@@ -373,7 +376,7 @@ struct ThreadState {
 
   ThreadState(int index, WT_CONNECTION *conn)
       : tid(index),
-        rand(1000 + index) {
+        rand(seeds[index]) {
     if (index == 0 && shuff)
 		rand.Shuffle(shuff, FLAGS_num);
     conn->open_session(conn, NULL, NULL, &session);
@@ -769,6 +772,7 @@ class Benchmark {
     arg[0].thread->stats.Report(name);
 
     for (int i = 0; i < n; i++) {
+	  seeds[i] = arg[i].thread->rand.Next();
       delete arg[i].thread;
     }
     delete[] arg;
@@ -1487,6 +1491,11 @@ int main(int argc, char** argv) {
   for (int i=0; i<FLAGS_num; i++)
       shuff[i] = i;
   }
+
+  seeds = (uint32_t *)malloc(FLAGS_threads * sizeof(uint32_t));
+  for (int i=0; i<FLAGS_threads; i++)
+  	seeds[i] = i + 1000;
+
   unsetenv("LD_LIBRARY_PATH");
   leveldb::Benchmark benchmark;
   benchmark.Run();
