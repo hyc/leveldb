@@ -817,6 +817,7 @@ class Benchmark {
 	  rc = mdb_cursor_put(mc, &mkey, &mval, flag);
       if (rc) {
         fprintf(stderr, "set error: %s\n", mdb_strerror(rc));
+		break;
       }
       thread->stats.FinishedSingleOp();
 	  }
