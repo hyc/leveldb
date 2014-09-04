@@ -106,6 +106,8 @@ static int FLAGS_write_buffer_size = 0;
 static size_t FLAGS_cache_size = 0;
 // Was a cache_size set?
 static bool FLAGS_cache_set = false;
+// Number of bytes in a block.
+static int FLAGS_block_size = rocksdb::BlockBasedTableOptions().block_size;
 
 // Maximum number of files to keep open at the same time (use default if == 0)
 static int FLAGS_open_files = 0;
@@ -409,7 +411,7 @@ class Duration {
 class Benchmark {
  private:
   shared_ptr<Cache> cache_;
-  const FilterPolicy* filter_policy_;
+  std::shared_ptr<const FilterPolicy> filter_policy_;
   DB* db_;
   int num_;
   int value_size_;
@@ -518,8 +520,6 @@ class Benchmark {
 
   ~Benchmark() {
     delete db_;
-    //delete cache_;
-    delete filter_policy_;
   }
 
   void Run() {
@@ -771,7 +771,7 @@ class Benchmark {
 
   void SnappyCompress(ThreadState* thread) {
     RandomGenerator gen;
-    Slice input = gen.Generate(Options().block_size);
+    Slice input = gen.Generate(FLAGS_block_size);
     int64_t bytes = 0;
     int64_t produced = 0;
     bool ok = true;
@@ -796,7 +796,7 @@ class Benchmark {
 
   void SnappyUncompress(ThreadState* thread) {
     RandomGenerator gen;
-    Slice input = gen.Generate(Options().block_size);
+    Slice input = gen.Generate(FLAGS_block_size);
     std::string compressed;
     bool ok = port::Snappy_Compress(Options().compression_opts, input.data(), input.size(), &compressed);
     int64_t bytes = 0;
@@ -820,10 +820,13 @@ class Benchmark {
     assert(db_ == NULL);
     Options options;
     options.create_if_missing = !FLAGS_use_existing_db;
-    options.block_cache = cache_;
     options.write_buffer_size = FLAGS_write_buffer_size;
     options.max_open_files = FLAGS_open_files;
-    options.filter_policy = filter_policy_;
+    BlockBasedTableOptions block_based_options;
+	block_based_options.block_cache = cache_;
+	block_based_options.block_size = FLAGS_block_size;
+	block_based_options.filter_policy = filter_policy_;
+	options.table_factory.reset(NewBlockBasedTableFactory(block_based_options));
     Status s = DB::Open(options, FLAGS_db, &db_);
     if (!s.ok()) {
       fprintf(stderr, "open error: %s\n", s.ToString().c_str());

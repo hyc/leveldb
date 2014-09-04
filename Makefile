@@ -130,8 +130,13 @@ doc/bench/db_bench_hyper.o: doc/bench/db_bench_hyper.cc
 db_bench_rocksdb: doc/bench/db_bench_rocksdb.o $(ROCKSDB)/librocksdb.a $(ROCKSDB)/$(TESTUTIL)
 	$(CXX) $(LDFLAGS) doc/bench/db_bench_rocksdb.o $(ROCKSDB)/librocksdb.a $(ROCKSDB)/$(TESTUTIL) -o $@ $(LIBS) -lrt
 
-doc/bench/db_bench_rocksdb.o: doc/bench/db_bench_rocksdb.cc
+$(ROCKSDB)/librocksdb.a:
 	make -C $(ROCKSDB) static_lib
+
+$(ROCKSDB)/$(TESTUTIL):
+	make -C $(ROCKSDB) $(TESTUTIL)
+
+doc/bench/db_bench_rocksdb.o: doc/bench/db_bench_rocksdb.cc
 	$(CXX) -std=c++11 -I$(ROCKSDB) -I$(ROCKSDB)/include -DROCKSDB_PLATFORM_POSIX -DROCKSDB_ATOMIC_PRESENT -DROCKSDB_FALLOCATE_PRESENT $(CXXFLAGS) -c $< -o $@
 
 db_bench_sqlite3: doc/bench/db_bench_sqlite3.o $(LIBRARY) $(TESTUTIL)
