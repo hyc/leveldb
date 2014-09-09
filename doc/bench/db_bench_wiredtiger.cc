@@ -1105,8 +1105,8 @@ repeat:
     }
     size_t read = 0;
     size_t found = 0;
-	Duration duration(FLAGS_duration, reads_);
-	while (!duration.Done(1)) {
+    Duration duration(FLAGS_duration, reads_);
+    while (!duration.Done(1)) {
       char key[100];
       const int k = thread->rand.Next() % FLAGS_num;
       if (k == 0) {
@@ -1114,7 +1114,7 @@ repeat:
       }
       snprintf(key, sizeof(key), "%016d", k);
       cursor->set_key(cursor, key);
-	  read++;
+      read++;
       if (cursor->search(cursor) == 0) {
        found++;
       }
@@ -1253,47 +1253,48 @@ repeat:
   void BGWriter(ThreadState *thread) {
     // Special thread that keeps writing until other threads are done.
     RandomGenerator gen;
-	double last = Env::Default()->NowMicros();
-	int writes_per_second_by_10 = 0;
-	int num_writes = 0;
+    double last = Env::Default()->NowMicros();
+    int writes_per_second_by_10 = 0;
+    int num_writes = 0;
 
-	// --writes_per_second rate limit is enforced per 100 milliseconds
-	// intervals to avoid a burst of writes at the start of each second.
-	if (FLAGS_writes_per_second > 0)
-		writes_per_second_by_10 = FLAGS_writes_per_second / 10;
+    // --writes_per_second rate limit is enforced per 100 milliseconds
+    // intervals to avoid a burst of writes at the start of each second.
+    if (FLAGS_writes_per_second > 0)
+      writes_per_second_by_10 = FLAGS_writes_per_second / 10;
 
-	// Don't merge stats from this thread with the readers.
-	thread->stats.SetExcludeFromMerge();
+    // Don't merge stats from this thread with the readers.
+    thread->stats.SetExcludeFromMerge();
+
+      char key[100];
+      const char *ckey;
+      WT_CURSOR *cursor;
+      std::stringstream cur_config;
+      cur_config.str("");
+      cur_config << "overwrite";
+      int ret = thread->session->open_cursor(thread->session, uri_.c_str(), NULL, cur_config.str().c_str(), &cursor);
+      if (ret != 0) {
+        fprintf(stderr, "open_cursor error: %s\n", wiredtiger_strerror(ret));
+        exit(1);
+      }
 
       while (true) {
         {
           MutexLock l(&thread->shared->mu);
           if (thread->shared->num_done + 1 >= thread->shared->num_initialized) {
             // Other threads have finished
-		  // Report and wipe out our own stats
-		  char buf[100];
-		  snprintf(buf, sizeof(buf), "(desired %d ops/sec)",
-			FLAGS_writes_per_second);
-		  thread->stats.Stop();
-		  thread->stats.AddMessage(buf);
-		  thread->stats.Report(Slice("writer"));
-		  thread->stats.Start(thread->tid);
+            // Report and wipe out our own stats
+            char buf[100];
+            snprintf(buf, sizeof(buf), "(desired %d ops/sec)",
+            FLAGS_writes_per_second);
+            thread->stats.Stop();
+            thread->stats.AddMessage(buf);
+            thread->stats.Report(Slice("writer"));
+            thread->stats.Start(thread->tid);
             break;
           }
         }
 
-        const char *ckey;
-        WT_CURSOR *cursor;
-        std::stringstream cur_config;
-        cur_config.str("");
-        cur_config << "overwrite";
-        int ret = thread->session->open_cursor(thread->session, uri_.c_str(), NULL, cur_config.str().c_str(), &cursor);
-        if (ret != 0) {
-          fprintf(stderr, "open_cursor error: %s\n", wiredtiger_strerror(ret));
-        exit(1);
-        }
         const int k = thread->rand.Next() % FLAGS_num;
-        char key[100];
         snprintf(key, sizeof(key), "%016d", k);
         cursor->set_key(cursor, key);
         std::string value = gen.Generate(value_size_).ToString();
@@ -1303,23 +1304,24 @@ repeat:
           fprintf(stderr, "set error: %s\n", wiredtiger_strerror(ret));
           exit(1);
         }
-        cursor->close(cursor);
-		thread->stats.FinishedSingleOp();
+        (void)cursor->reset(cursor);
+        thread->stats.FinishedSingleOp();
 
-	  ++num_writes;
-	  if (writes_per_second_by_10 && num_writes >= writes_per_second_by_10) {
-		double now = Env::Default()->NowMicros();
-		double usecs_since_last = now - last;
+        ++num_writes;
+        if (writes_per_second_by_10 && num_writes >= writes_per_second_by_10) {
+          double now = Env::Default()->NowMicros();
+          double usecs_since_last = now - last;
 
-		num_writes = 0;
-		last = now;
+          num_writes = 0;
+          last = now;
 
-		if (usecs_since_last < 100000.0) {
-		  Env::Default()->SleepForMicroseconds(100000.0 - usecs_since_last);
-		  last = Env::Default()->NowMicros();
-		}
+          if (usecs_since_last < 100000.0) {
+            Env::Default()->SleepForMicroseconds(100000.0 - usecs_since_last);
+            last = Env::Default()->NowMicros();
+          }
+        }
       }
-    }
+      cursor->close(cursor);
   }
 
   void Compact(ThreadState* thread) {
