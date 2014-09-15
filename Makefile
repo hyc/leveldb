@@ -55,7 +55,7 @@ TESTS = \
 
 PROGRAMS = db_bench leveldbutil $(TESTS)
 BENCHMARKS = db_bench db_bench_sqlite3 db_bench_tree_db db_bench_mdb \
-	db_bench_bdb db_bench_sophia db_bench_tokudb \
+	db_bench_bdb db_bench_sophia db_bench_tdb db_bench_tokudb \
 	db_bench_basho db_bench_hyper db_bench_rocksdb db_bench_wiredtiger
 
 BASHO = ../basho_leveldb
@@ -159,6 +159,9 @@ db_bench_bdb: doc/bench/db_bench_bdb.o $(LIBRARY) $(TESTUTIL)
 
 db_bench_sophia: doc/bench/db_bench_sophia.o $(LIBRARY) $(TESTUTIL)
 	$(CXX) doc/bench/db_bench_sophia.o $(LIBRARY) $(TESTUTIL) -o $@ $(LDFLAGS) /usr/local/lib/libsophia.a
+
+db_bench_tdb: doc/bench/db_bench_tdb.o $(LIBRARY) $(TESTUTIL)
+	$(CXX) doc/bench/db_bench_tdb.o $(LIBRARY) $(TESTUTIL) -o $@ $(LDFLAGS) /usr/local/lib/libtdb.a
 
 db_bench_tokudb: doc/bench/db_bench_tokudb.o $(LIBRARY) $(TESTUTIL)
 	$(CXX) doc/bench/db_bench_tokudb.o $(LIBRARY) $(TESTUTIL) -o $@ $(LDFLAGS) /usr/local/lib/libtokufractaltree_static.a /usr/local/lib/libtokuportability_static.a -ldl -lz
