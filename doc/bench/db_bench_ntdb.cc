@@ -7,7 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
-#include <tdb.h>
+#include <ntdb.h>
 #include <fcntl.h>
 #include "port/port.h"
 #include "util/histogram.h"
@@ -92,6 +92,8 @@ static bool FLAGS_histogram = false;
 // Page size. Default 1 KB
 static int FLAGS_page_size = 1024;
 
+static int FLAGS_hash_size = 100000;
+
 // If true, do not destroy the existing database.  If you set this
 // flag and also specify a benchmark that wants a fresh database, that
 // benchmark will fail.
@@ -119,6 +121,8 @@ static const char* FLAGS_db = NULL;
 // Guarantees full set of unique data, but uses memory for the
 // shuffle array, not feasible for larger tests.
 static bool FLAGS_shuffle = false;
+
+static bool fresh_db;
 
 static int *shuff = NULL;
 
@@ -410,7 +414,7 @@ class Benchmark {
   };
 
  private:
-  TDB_CONTEXT *db_;
+  struct ntdb_context *db_;
   int db_num_;
   int num_;
   int value_size_;
@@ -450,7 +454,7 @@ class Benchmark {
   }
 
   void PrintEnvironment() {
-    fprintf(stderr, "TDB:        version 1.3.0\n");
+    fprintf(stderr, "NTDB:       version 1.0\n");
 
 #if defined(__linux)
     time_t now = time(NULL);
@@ -508,7 +512,7 @@ class Benchmark {
   }
 
   ~Benchmark() {
-  	tdb_close(db_);
+  	ntdb_close(db_);
   }
 
   void Run() {
@@ -532,7 +536,7 @@ class Benchmark {
 	  entries_per_batch_ = 1;
 
 	  void (Benchmark::*method)(ThreadState*) = NULL;
-	  bool fresh_db = false;
+	  fresh_db = false;
 	  int num_threads = FLAGS_threads;
 
 	  dbflags_ = NONE;
@@ -621,7 +625,7 @@ class Benchmark {
 	  if (db_) {
 		  char cmd[200];
 		  sprintf(cmd, "rm -rf %s*", FLAGS_db);
-		  tdb_close(db_);
+		  ntdb_close(db_);
 		  if (system(cmd)) exit(1);
 		  db_ = NULL;
 	  }
@@ -729,7 +733,7 @@ class Benchmark {
     std::string test_dir;
     Env::Default()->GetTestDirectory(&test_dir);
     snprintf(file_name, sizeof(file_name),
-             "%s/dbbench_tdb-%d",
+             "%s/dbbench_ntdb-%d",
              test_dir.c_str(),
              db_num_);
 
@@ -737,12 +741,12 @@ class Benchmark {
 	if (system(cmd)) exit(1);
 
 	if (flags != SYNC)
-		tflags |= TDB_NOSYNC;
+		tflags |= NTDB_NOSYNC;
 
-	strcat(file_name, "/data.tdb");
-	db_ = tdb_open(file_name, 0, tflags, O_RDWR|O_CREAT, 0664);
+	strcat(file_name, "/data.ntdb");
+	db_ = ntdb_open(file_name, tflags, O_RDWR|O_CREAT, 0664, NULL);
 	if (!db_) {
-      fprintf(stderr, "tdb_open failed\n");
+      fprintf(stderr, "ntdb_open failed\n");
 	  exit(1);
     }
   }
@@ -769,7 +773,7 @@ class Benchmark {
     // Write to database
 	int i = 0;
 	while (!duration.Done(entries_per_batch_)) {
-	  tdb_transaction_start(db_);
+	  ntdb_transaction_start(db_);
 	  
 	  for (int j=0; j < entries_per_batch_; j++) {
 
@@ -780,14 +784,14 @@ class Benchmark {
 
 	  tdata.dptr = (unsigned char *)gen.Generate(value_size_).data();
 	  tdata.dsize = value_size_;
-	  rc = tdb_store(db_, tkey, tdata, 0);
+	  rc = ntdb_store(db_, tkey, tdata, 0);
       if (rc) {
-        fprintf(stderr, "set error: %s\n", tdb_errorstr(db_));
+        fprintf(stderr, "set error: %s\n", ntdb_errorstr((enum NTDB_ERROR)rc));
 		break;
       }
       thread->stats.FinishedSingleOp();
 	  }
-	  tdb_transaction_commit(db_);
+	  ntdb_transaction_commit(db_);
 	  i += entries_per_batch_;
     }
 	thread->stats.AddBytes(bytes);
@@ -798,20 +802,19 @@ class Benchmark {
   }
 
   void ReadSequential(ThreadState *thread) {
-  	TDB_DATA next, key, data;
+  	TDB_DATA key, data;
 	int64_t bytes = 0;
+	int rc;
 
-	tdb_transaction_start(db_);
-	for (key = tdb_firstkey(db_); key.dptr; key = next) {
+	ntdb_transaction_start(db_);
+	for (rc = ntdb_firstkey(db_, &key); !rc; rc = ntdb_nextkey(db_, &key)) {
 		data.dsize = 0;
-		data = tdb_fetch(db_, key);
+		rc = ntdb_fetch(db_, key, &data);
 		bytes += key.dsize + data.dsize;
-		next = tdb_nextkey(db_, key);
-		free(key.dptr);
 		free(data.dptr);
 	  thread->stats.FinishedSingleOp();
 	}
-	tdb_transaction_cancel(db_);
+	ntdb_transaction_cancel(db_);
 	thread->stats.AddBytes(bytes);
   }
 
@@ -821,20 +824,17 @@ class Benchmark {
 	size_t read = 0;
 	size_t found = 0;
     char ckey[100];
-	int ikey;
+	int rc;
 
 	key.dptr = (unsigned char *)ckey;
 
 	Duration duration(FLAGS_duration, reads_);
     while (!duration.Done(1)) {
       const int k = thread->rand.Next() % FLAGS_num;
-	  if (FLAGS_intkey)
-		  ikey = k;
-	  else
-		  key.dsize = snprintf(ckey, sizeof(ckey), "%016d", k);
+	  key.dsize = snprintf(ckey, sizeof(ckey), "%016d", k);
 	  read++;
-	  data = tdb_fetch(db_, key);
-	  if (data.dptr) {
+	  rc = ntdb_fetch(db_, key, &data);
+	  if (!rc) {
 		found++;
 		free(data.dptr);
 	  }
@@ -894,15 +894,15 @@ class Benchmark {
 	  tkey.dsize = snprintf(key, sizeof(key), "%016d", k);
 	  tdata.dptr = (unsigned char *)gen.Generate(value_size_).data();
 	  tdata.dsize = value_size_;
-	  tdb_transaction_start(db_);
-	  rc = tdb_store(db_, tkey, tdata, 0);
+	  ntdb_transaction_start(db_);
+	  rc = ntdb_store(db_, tkey, tdata, 0);
 	  if (rc) {
-		fprintf(stderr, "put error: %s\n", tdb_errorstr(db_));
+		fprintf(stderr, "put error: %s\n", ntdb_errorstr((enum NTDB_ERROR)rc));
 		exit(1);
 	  }
-	  rc = tdb_transaction_commit(db_);
+	  rc = ntdb_transaction_commit(db_);
 	  if (rc) {
-		fprintf(stderr, "commit error: %s\n", tdb_errorstr(db_));
+		fprintf(stderr, "commit error: %s\n", ntdb_errorstr((enum NTDB_ERROR)rc));
 		exit(1);
 	  }
 	  thread->stats.FinishedSingleOp();
@@ -942,6 +942,8 @@ int main(int argc, char** argv) {
     } else if (sscanf(argv[i], "--use_existing_db=%d%c", &n, &junk) == 1 &&
                (n == 0 || n == 1)) {
       FLAGS_use_existing_db = n;
+    } else if (sscanf(argv[i], "--hash_size=%d%c", &n, &junk) == 1) {
+      FLAGS_hash_size = n;
     } else if (sscanf(argv[i], "--num=%d%c", &n, &junk) == 1) {
       FLAGS_num = n;
     } else if (sscanf(argv[i], "--batch=%d%c", &n, &junk) == 1) {
