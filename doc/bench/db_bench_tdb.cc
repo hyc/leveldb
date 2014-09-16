@@ -9,6 +9,8 @@
 #include <time.h>
 #include <tdb.h>
 #include <fcntl.h>
+#include <unistd.h>
+#include <sys/wait.h>
 #include "port/port.h"
 #include "util/histogram.h"
 #include "util/mutexlock.h"
@@ -92,6 +94,11 @@ static bool FLAGS_histogram = false;
 // Page size. Default 1 KB
 static int FLAGS_page_size = 1024;
 
+static int FLAGS_hash_size = 100000;
+
+// Use new hash function
+static bool FLAGS_new_hash = false;
+
 // If true, do not destroy the existing database.  If you set this
 // flag and also specify a benchmark that wants a fresh database, that
 // benchmark will fail.
@@ -119,6 +126,8 @@ static const char* FLAGS_db = NULL;
 // Guarantees full set of unique data, but uses memory for the
 // shuffle array, not feasible for larger tests.
 static bool FLAGS_shuffle = false;
+
+static bool fresh_db;
 
 static int *shuff = NULL;
 
@@ -180,16 +189,19 @@ static void AppendWithSpace(std::string* str, Slice msg) {
   str->append(msg.data(), msg.size());
 }
 
+struct Stat0 {
+  double start;
+  double finish;
+  double seconds;
+  size_t done;
+  int64_t bytes;
+};
+
 class Stats {
  private:
   int id_;
-  double start_;
-  double finish_;
-  double seconds_;
-  size_t done_;
   size_t last_report_done_;
   int64_t next_report_;
-  int64_t bytes_;
   double last_op_finish_;
   double last_report_finish_;
   Histogram hist_;
@@ -197,6 +209,11 @@ class Stats {
   bool exclude_from_merge_;
 
  public:
+  double start_;
+  double finish_;
+  double seconds_;
+  size_t done_;
+  int64_t bytes_;
   Stats() { Start(-1); }
 
   void Start(int id) {
@@ -411,7 +428,6 @@ class Benchmark {
 
  private:
   TDB_CONTEXT *db_;
-  int db_num_;
   int num_;
   int value_size_;
   int entries_per_batch_;
@@ -486,7 +502,6 @@ class Benchmark {
  public:
   Benchmark()
   : db_(NULL),
-    db_num_(0),
     num_(FLAGS_num),
 	value_size_(FLAGS_value_size),
 	entries_per_batch_(1),
@@ -532,7 +547,7 @@ class Benchmark {
 	  entries_per_batch_ = 1;
 
 	  void (Benchmark::*method)(ThreadState*) = NULL;
-	  bool fresh_db = false;
+	  fresh_db = false;
 	  int num_threads = FLAGS_threads;
 
 	  dbflags_ = NONE;
@@ -725,22 +740,23 @@ class Benchmark {
 	int rc, tflags = 0;
 
     char file_name[100], cmd[200];
-    db_num_++;
     std::string test_dir;
     Env::Default()->GetTestDirectory(&test_dir);
     snprintf(file_name, sizeof(file_name),
-             "%s/dbbench_tdb-%d",
-             test_dir.c_str(),
-             db_num_);
+             "%s/dbbench_tdb",
+             test_dir.c_str());
 
 	sprintf(cmd, "mkdir -p %s", file_name);
 	if (system(cmd)) exit(1);
+
+    if (FLAGS_new_hash)
+		tflags |= TDB_INCOMPATIBLE_HASH;
 
 	if (flags != SYNC)
 		tflags |= TDB_NOSYNC;
 
 	strcat(file_name, "/data.tdb");
-	db_ = tdb_open(file_name, 0, tflags, O_RDWR|O_CREAT, 0664);
+	db_ = tdb_open(file_name, FLAGS_hash_size, tflags, O_RDWR|O_CREAT, 0664);
 	if (!db_) {
       fprintf(stderr, "tdb_open failed\n");
 	  exit(1);
@@ -767,27 +783,34 @@ class Benchmark {
 	tkey.dptr = (unsigned char *)key;
 	int64_t bytes = 0;
     // Write to database
-	int i = 0;
+	int i = 0, rc;
 	while (!duration.Done(entries_per_batch_)) {
-	  tdb_transaction_start(db_);
+	  rc = tdb_transaction_start(db_);
+      if (rc < 0) {
+        fprintf(stderr, "txn start: %s\n", tdb_errorstr(db_));
+		break;
+      }
 	  
 	  for (int j=0; j < entries_per_batch_; j++) {
 
       const int k = (write_order_ == SEQUENTIAL) ? i+j : (shuff ? shuff[i+j] : (thread->rand.Next() % FLAGS_num));
-	  int rc;
-		  tkey.dsize = snprintf(key, sizeof(key), "%016d", k);
+	  tkey.dsize = snprintf(key, sizeof(key), "%016d", k);
       bytes += value_size_ + tkey.dsize;
 
 	  tdata.dptr = (unsigned char *)gen.Generate(value_size_).data();
 	  tdata.dsize = value_size_;
 	  rc = tdb_store(db_, tkey, tdata, 0);
-      if (rc) {
+      if (rc < 0) {
         fprintf(stderr, "set error: %s\n", tdb_errorstr(db_));
 		break;
       }
       thread->stats.FinishedSingleOp();
 	  }
-	  tdb_transaction_commit(db_);
+	  rc = tdb_transaction_commit(db_);
+      if (rc < 0) {
+        fprintf(stderr, "commit error: %s\n", tdb_errorstr(db_));
+		break;
+      }
 	  i += entries_per_batch_;
     }
 	thread->stats.AddBytes(bytes);
@@ -847,7 +870,29 @@ class Benchmark {
 
   void ReadWhileWriting(ThreadState* thread) {
     if (thread->tid > 0) {
-      ReadRandom(thread);
+	    struct Stat0 ss;
+		int fds[2];
+		pid_t pid;
+		pipe(fds);
+		pid = fork();
+		if (pid == 0) {
+		  tdb_reopen(db_);
+		  ReadRandom(thread);
+		  ss.start = thread->stats.start_;
+		  ss.finish = thread->stats.finish_;
+		  ss.seconds = thread->stats.seconds_;
+		  ss.done = thread->stats.done_;
+		  ss.bytes = thread->stats.bytes_;
+		  write(fds[1], &ss, sizeof(ss));
+		} else {
+		  waitpid(pid, NULL, 0);
+		  read(fds[0], &ss, sizeof(ss));
+		  thread->stats.start_ = ss.start;
+		  thread->stats.finish_ = ss.finish;
+		  thread->stats.seconds_ = ss.seconds;
+		  thread->stats.done_ = ss.done;
+		  thread->stats.bytes_ = ss.bytes;
+		}
     } else {
 	  BGWriter(thread);
 	}
@@ -894,7 +939,11 @@ class Benchmark {
 	  tkey.dsize = snprintf(key, sizeof(key), "%016d", k);
 	  tdata.dptr = (unsigned char *)gen.Generate(value_size_).data();
 	  tdata.dsize = value_size_;
-	  tdb_transaction_start(db_);
+	  rc = tdb_transaction_start(db_);
+	  if (rc) {
+		fprintf(stderr, "txn_start error: %s\n", tdb_errorstr(db_));
+		exit(1);
+	  }
 	  rc = tdb_store(db_, tkey, tdata, 0);
 	  if (rc) {
 		fprintf(stderr, "put error: %s\n", tdb_errorstr(db_));
@@ -942,6 +991,11 @@ int main(int argc, char** argv) {
     } else if (sscanf(argv[i], "--use_existing_db=%d%c", &n, &junk) == 1 &&
                (n == 0 || n == 1)) {
       FLAGS_use_existing_db = n;
+    } else if (sscanf(argv[i], "--new_hash=%d%c", &n, &junk) == 1 &&
+               (n == 0 || n == 1)) {
+      FLAGS_new_hash = n;
+    } else if (sscanf(argv[i], "--hash_size=%d%c", &n, &junk) == 1) {
+      FLAGS_hash_size = n;
     } else if (sscanf(argv[i], "--num=%d%c", &n, &junk) == 1) {
       FLAGS_num = n;
     } else if (sscanf(argv[i], "--batch=%d%c", &n, &junk) == 1) {

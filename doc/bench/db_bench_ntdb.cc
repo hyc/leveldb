@@ -9,6 +9,8 @@
 #include <time.h>
 #include <ntdb.h>
 #include <fcntl.h>
+#include <unistd.h>
+#include <sys/wait.h>
 #include "port/port.h"
 #include "util/histogram.h"
 #include "util/mutexlock.h"
@@ -184,16 +186,19 @@ static void AppendWithSpace(std::string* str, Slice msg) {
   str->append(msg.data(), msg.size());
 }
 
+struct Stat0 {
+  double start;
+  double finish;
+  double seconds;
+  size_t done;
+  int64_t bytes;
+};
+
 class Stats {
  private:
   int id_;
-  double start_;
-  double finish_;
-  double seconds_;
-  size_t done_;
   size_t last_report_done_;
   int64_t next_report_;
-  int64_t bytes_;
   double last_op_finish_;
   double last_report_finish_;
   Histogram hist_;
@@ -201,6 +206,11 @@ class Stats {
   bool exclude_from_merge_;
 
  public:
+  double start_;
+  double finish_;
+  double seconds_;
+  size_t done_;
+  int64_t bytes_;
   Stats() { Start(-1); }
 
   void Start(int id) {
@@ -410,7 +420,8 @@ class Benchmark {
   };
   enum DBFlags {
     NONE = 0,
-	SYNC
+	SYNC,
+	RDONLY
   };
 
  private:
@@ -596,15 +607,20 @@ class Benchmark {
 		value_size_ = 100 * 1000;
 		method = &Benchmark::Write;
       } else if (name == Slice("readseq")) {
+		dbflags_ = RDONLY;
         method = &Benchmark::ReadSequential;
       } else if (name == Slice("readreverse")) {
+		dbflags_ = RDONLY;
         method = &Benchmark::ReadReverse;
       } else if (name == Slice("readrandom")) {
+		dbflags_ = RDONLY;
         method = &Benchmark::ReadRandom;
       } else if (name == Slice("readrand100K")) {
+		dbflags_ = RDONLY;
         reads_ /= 1000;
         method = &Benchmark::ReadRandom;
       } else if (name == Slice("readseq100K")) {
+		dbflags_ = RDONLY;
         reads_ /= 1000;
         method = &Benchmark::ReadSequential;
       } else if (name == Slice("readwhilewriting")) {
@@ -726,7 +742,8 @@ class Benchmark {
 
     void Open(DBFlags flags) {
     assert(db_ == NULL);
-	int rc, tflags = 0;
+	int rc, tflags = 0, oflags = 0;
+	union ntdb_attribute hashsize;
 
     char file_name[100], cmd[200];
     db_num_++;
@@ -742,9 +759,16 @@ class Benchmark {
 
 	if (flags != SYNC)
 		tflags |= NTDB_NOSYNC;
+	if (flags == RDONLY)
+		oflags = O_RDONLY;
+	else
+		oflags = O_RDWR|O_CREAT;
 
+	hashsize.base.attr = NTDB_ATTRIBUTE_HASHSIZE;
+	hashsize.base.next = NULL;
+	hashsize.hashsize.size = FLAGS_hash_size;
 	strcat(file_name, "/data.ntdb");
-	db_ = ntdb_open(file_name, tflags, O_RDWR|O_CREAT, 0664, NULL);
+	db_ = ntdb_open(file_name, tflags, oflags, 0664, &hashsize);
 	if (!db_) {
       fprintf(stderr, "ntdb_open failed\n");
 	  exit(1);
@@ -847,7 +871,31 @@ class Benchmark {
 
   void ReadWhileWriting(ThreadState* thread) {
     if (thread->tid > 0) {
-      ReadRandom(thread);
+	    struct Stat0 ss;
+		int fds[2];
+		pid_t pid;
+		pipe(fds);
+		pid = fork();
+		if (pid == 0) {
+			ntdb_close(db_);
+			db_ = 0;
+			Open(dbflags_);
+		  ReadRandom(thread);
+		  ss.start = thread->stats.start_;
+		  ss.finish = thread->stats.finish_;
+		  ss.seconds = thread->stats.seconds_;
+		  ss.done = thread->stats.done_;
+		  ss.bytes = thread->stats.bytes_;
+		  write(fds[1], &ss, sizeof(ss));
+		} else {
+		  waitpid(pid, NULL, 0);
+		  read(fds[0], &ss, sizeof(ss));
+		  thread->stats.start_ = ss.start;
+		  thread->stats.finish_ = ss.finish;
+		  thread->stats.seconds_ = ss.seconds;
+		  thread->stats.done_ = ss.done;
+		  thread->stats.bytes_ = ss.bytes;
+		}
     } else {
 	  BGWriter(thread);
 	}
