@@ -890,6 +890,7 @@ class Benchmark {
 	  else
 		  key.mv_size = snprintf(ckey, sizeof(ckey), "%016d", k);
 	  mdb_txn_renew(txn);
+	  mdb_cursor_renew(txn, cursor);
 	  read++;
 	  if (!mdb_cursor_get(cursor, &key, &data, MDB_SET))
 		found++;
