@@ -730,7 +730,8 @@ class Benchmark {
 	else
 		fconfig.durability_opt = FDB_DRB_NONE;
 	fconfig.flags = FDB_OPEN_FLAG_CREATE;
-	fconfig.compaction_threshold = 0;
+//	fconfig.compaction_threshold = 0;
+	fconfig.compaction_mode = FDB_COMPACTION_AUTO;
 
     // Create tuning options and open the database
 	rc = fdb_open(&db_, file_name, &fconfig);
@@ -770,7 +771,6 @@ class Benchmark {
 	  for (int j=0; j < entries_per_batch_; j++) {
 
       const unsigned long k = (write_order_ == SEQUENTIAL) ? i+j : (shuff ? shuff[i+j] : (thread->rand.Next() % FLAGS_num));
-	  int rc;
 	  klen = snprintf(key, sizeof(key), "%016lx", k);
       bytes += value_size_ + klen;
 
