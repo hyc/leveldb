@@ -151,6 +151,9 @@ db_bench_sqlm: doc/bench/db_bench_sqlo.o $(LIBRARY) $(TESTUTIL)
 db_bench_tree_db: doc/bench/db_bench_tree_db.o $(LIBRARY) $(TESTUTIL)
 	$(CXX) doc/bench/db_bench_tree_db.o $(LIBRARY) $(TESTUTIL) -o $@ $(LDFLAGS) /usr/local/lib/libkyotocabinet.a
 
+db_bench_forestdb: doc/bench/db_bench_forestdb.o $(LIBRARY) $(TESTUTIL)
+	$(CXX) doc/bench/db_bench_forestdb.o $(LIBRARY) $(TESTUTIL) -o $@ $(LDFLAGS) /usr/local/lib/libforestdb.a
+
 db_bench_mdb: doc/bench/db_bench_mdb.o $(LIBRARY) $(TESTUTIL)
 	$(CXX) doc/bench/db_bench_mdb.o $(LIBRARY) $(TESTUTIL) -o $@ $(LDFLAGS) /usr/local/lib/liblmdb.a
 
