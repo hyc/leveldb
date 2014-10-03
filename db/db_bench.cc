@@ -69,10 +69,10 @@ static const char* FLAGS_benchmarks =
     ;
 
 // Number of key/values to place in database
-static int FLAGS_num = 1000000;
+static int64_t FLAGS_num = 1000000;
 
 // Number of read operations to do.  If negative, do FLAGS_num reads.
-static int FLAGS_reads = -1;
+static int64_t FLAGS_reads = -1;
 
 // Number of concurrent threads to run.
 static int FLAGS_threads = 1;
@@ -362,7 +362,7 @@ struct SharedState {
 // Per-thread state for concurrent executions of the same benchmark.
 struct ThreadState {
   int tid;             // 0..n-1 when running in n threads
-  Random rand;         // Has different seeds for different threads
+  Random64 rand;         // Has different seeds for different threads
   Stats stats;
   SharedState* shared;
 
@@ -411,11 +411,11 @@ class Benchmark {
   Cache* cache_;
   const FilterPolicy* filter_policy_;
   DB* db_;
-  int num_;
+  int64_t num_;
   int value_size_;
   int entries_per_batch_;
   WriteOptions write_options_;
-  int reads_;
+  int64_t reads_;
   int heap_counter_;
 
   void PrintHeader() {
@@ -425,7 +425,7 @@ class Benchmark {
     fprintf(stdout, "Values:     %d bytes each (%d bytes after compression)\n",
             FLAGS_value_size,
             static_cast<int>(FLAGS_value_size * FLAGS_compression_ratio + 0.5));
-    fprintf(stdout, "Entries:    %d\n", num_);
+    fprintf(stdout, "Entries:    %ld\n", num_);
     fprintf(stdout, "RawSize:    %.1f MB (estimated)\n",
             ((static_cast<int64_t>(kKeySize + FLAGS_value_size) * num_)
              / 1048576.0));
@@ -847,7 +847,7 @@ class Benchmark {
 	Duration duration(test_duration, num_);
     if (num_ != FLAGS_num) {
       char msg[100];
-      snprintf(msg, sizeof(msg), "(%d ops)", num_);
+      snprintf(msg, sizeof(msg), "(%ld ops)", num_);
       thread->stats.AddMessage(msg);
     }
 
@@ -857,13 +857,13 @@ class Benchmark {
     WriteBatch batch;
     Status s;
     int64_t bytes = 0;
-	int i = 0;
+	unsigned long i = 0;
 	while (!duration.Done(entries_per_batch_)) {
       batch.Clear();
       for (int j = 0; j < entries_per_batch_; j++) {
-        const int k = seq ? i+j : (shuff ? shuff[i+j] : (thread->rand.Next() % FLAGS_num));
+        const unsigned long k = seq ? i+j : (shuff ? shuff[i+j] : (thread->rand.Next() % FLAGS_num));
         char key[100];
-        snprintf(key, sizeof(key), "%016d", k);
+        snprintf(key, sizeof(key), "%016lx", k);
         batch.Put(key, Slice(gen.Generate(value_size_).ToString()));
         bytes += value_size_ + strlen(key);
         thread->stats.FinishedSingleOp();
@@ -912,8 +912,8 @@ class Benchmark {
 	Duration duration(FLAGS_duration, reads_);
     while (!duration.Done(1)) {
       char key[100];
-      const int k = thread->rand.Next() % FLAGS_num;
-      snprintf(key, sizeof(key), "%016d", k);
+      const unsigned long k = thread->rand.Next() % FLAGS_num;
+      snprintf(key, sizeof(key), "%016lx", k);
 	  read++;
       if (db_->Get(options, key, &value).ok()) {
         found++;
@@ -930,8 +930,8 @@ class Benchmark {
     std::string value;
     for (int i = 0; i < reads_; i++) {
       char key[100];
-      const int k = thread->rand.Next() % FLAGS_num;
-      snprintf(key, sizeof(key), "%016d.", k);
+      const unsigned long k = thread->rand.Next() % FLAGS_num;
+      snprintf(key, sizeof(key), "%016lx.", k);
       db_->Get(options, key, &value);
       thread->stats.FinishedSingleOp();
     }
@@ -943,8 +943,8 @@ class Benchmark {
     const int range = (FLAGS_num + 99) / 100;
     for (int i = 0; i < reads_; i++) {
       char key[100];
-      const int k = thread->rand.Next() % range;
-      snprintf(key, sizeof(key), "%016d", k);
+      const unsigned long k = thread->rand.Next() % range;
+      snprintf(key, sizeof(key), "%016lx", k);
       db_->Get(options, key, &value);
       thread->stats.FinishedSingleOp();
     }
@@ -959,8 +959,8 @@ class Benchmark {
     while (!duration.Done(1)) {
       Iterator* iter = db_->NewIterator(options);
       char key[100];
-      const int k = thread->rand.Next() % FLAGS_num;
-      snprintf(key, sizeof(key), "%016d", k);
+      const unsigned long k = thread->rand.Next() % FLAGS_num;
+      snprintf(key, sizeof(key), "%016lx", k);
       iter->Seek(key);
 	  read++;
       if (iter->Valid() && iter->key() == key) found++;
@@ -982,9 +982,9 @@ class Benchmark {
     while (!duration.Done(entries_per_batch_)) {
       batch.Clear();
       for (int j = 0; j < entries_per_batch_; j++) {
-        const int k = seq ? i+j : (thread->rand.Next() % FLAGS_num);
+        const unsigned long k = seq ? i+j : (thread->rand.Next() % FLAGS_num);
         char key[100];
-        snprintf(key, sizeof(key), "%016d", k);
+        snprintf(key, sizeof(key), "%016lx", k);
         batch.Delete(key);
         thread->stats.FinishedSingleOp();
       }
@@ -1045,9 +1045,9 @@ class Benchmark {
 		}
 	  }
 
-	  const int k = thread->rand.Next() % FLAGS_num;
+	  const unsigned long k = thread->rand.Next() % FLAGS_num;
 	  char key[100];
-	  snprintf(key, sizeof(key), "%016d", k);
+	  snprintf(key, sizeof(key), "%016lx", k);
 	  Status s = db_->Put(write_options_, key, gen.Generate(value_size_));
 	  if (!s.ok()) {
 		fprintf(stderr, "put error: %s\n", s.ToString().c_str());

@@ -47,10 +47,10 @@ static const char* FLAGS_benchmarks =
     ;
 
 // Number of key/values to place in database
-static int FLAGS_num = 1000000;
+static int64_t FLAGS_num = 1000000;
 
 // Number of read operations to do.  If negative, do FLAGS_num reads.
-static int FLAGS_reads = -1;
+static int64_t FLAGS_reads = -1;
 
 // Number of concurrent threads to run.
 static int FLAGS_threads = 1;
@@ -345,7 +345,7 @@ struct SharedState {
 // Per-thread state for concurrent executions of the same benchmark.
 struct ThreadState {
   int tid;             // 0..n-1 when running in n threads
-  Random rand;         // Has different seeds for different threads
+  Random64 rand;         // Has different seeds for different threads
   Stats stats;
   SharedState* shared;
 
@@ -403,10 +403,10 @@ class Benchmark {
  private:
   kyotocabinet::TreeDB* db_;
   int db_num_;
-  int num_;
+  int64_t num_;
   int value_size_;
   int entries_per_batch_;
-  int reads_;
+  int64_t reads_;
   DBFlags dbflags_;
   Order write_order_;
   kyotocabinet::LZOCompressor<kyotocabinet::LZO::RAW> comp_;
@@ -418,7 +418,7 @@ class Benchmark {
     fprintf(stdout, "Values:     %d bytes each (%d bytes after compression)\n",
             FLAGS_value_size,
             static_cast<int>(FLAGS_value_size * FLAGS_compression_ratio + 0.5));
-    fprintf(stdout, "Entries:    %d\n", num_);
+    fprintf(stdout, "Entries:    %ld\n", num_);
     fprintf(stdout, "RawSize:    %.1f MB (estimated)\n",
             ((static_cast<int64_t>(kKeySize + FLAGS_value_size) * num_)
              / 1048576.0));
@@ -759,7 +759,7 @@ class Benchmark {
 	Duration duration(test_duration, num_);
     if (num_ != FLAGS_num) {
       char msg[100];
-      snprintf(msg, sizeof(msg), "(%d ops)", num_);
+      snprintf(msg, sizeof(msg), "(%ld ops)", num_);
       thread->stats.AddMessage(msg);
     }
 
@@ -769,12 +769,12 @@ class Benchmark {
 	RandomGenerator gen;
 	int64_t bytes = 0;
     // Write to database
-	int i=0;
+	unsigned long i=0;
     while (!duration.Done(1))
     {
-      const int k = (write_order_ == SEQUENTIAL) ? i : (shuff ? shuff[i] : (thread->rand.Next() % FLAGS_num));
+      const unsigned long k = (write_order_ == SEQUENTIAL) ? i : (shuff ? shuff[i] : (thread->rand.Next() % FLAGS_num));
       char key[100];
-      snprintf(key, sizeof(key), "%016d", k);
+      snprintf(key, sizeof(key), "%016lx", k);
       bytes += value_size_ + strlen(key);
       std::string cpp_key = key;
       if (!db_->set(cpp_key, gen.Generate(value_size_).ToString())) {
@@ -821,9 +821,9 @@ class Benchmark {
 	Duration duration(FLAGS_duration, reads_);
 	while (!duration.Done(1)) {
       char key[100];
-      const int k = thread->rand.Next() % FLAGS_num;
+      const unsigned long k = thread->rand.Next() % FLAGS_num;
 	  bool success;
-      snprintf(key, sizeof(key), "%016d", k);
+      snprintf(key, sizeof(key), "%016lx", k);
       success = db_->get(key, &value);
 	  read++;
 	  if (success)
@@ -875,9 +875,9 @@ class Benchmark {
 		}
 	  }
 
-	  const int k = thread->rand.Next() % FLAGS_num;
+	  const unsigned long k = thread->rand.Next() % FLAGS_num;
 	  char key[100];
-	  snprintf(key, sizeof(key), "%016d", k);
+	  snprintf(key, sizeof(key), "%016lx", k);
       std::string cpp_key = key;
       if (!db_->set(cpp_key, gen.Generate(value_size_).ToString())) {
         fprintf(stderr, "set error: %s\n", db_->error().name());

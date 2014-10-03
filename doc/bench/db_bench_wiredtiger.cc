@@ -67,10 +67,10 @@ static const char* FLAGS_benchmarks =
     ;
 
 // Number of key/values to place in database
-static int FLAGS_num = 1000000;
+static int64_t FLAGS_num = 1000000;
 
 // Number of read operations to do.  If negative, do FLAGS_num reads.
-static int FLAGS_reads = -1;
+static int64_t FLAGS_reads = -1;
 
 // Number of concurrent threads to run.
 static int FLAGS_threads = 1;
@@ -369,7 +369,7 @@ struct SharedState {
 // Per-thread state for concurrent executions of the same benchmark.
 struct ThreadState {
   int tid;             // 0..n-1 when running in n threads
-  Random rand;         // Has different seeds for different threads
+  Random64 rand;         // Has different seeds for different threads
   Stats stats;
   SharedState* shared;
   WT_SESSION *session;
@@ -426,11 +426,11 @@ class Benchmark {
   WT_CONNECTION *conn_;
   std::string uri_;
   int db_num_;
-  int num_;
+  int64_t num_;
   int value_size_;
   int entries_per_batch_;
   int sync_;
-  int reads_;
+  int64_t reads_;
   int heap_counter_;
 
   void PrintHeader() {
@@ -440,7 +440,7 @@ class Benchmark {
     fprintf(stdout, "Values:     %d bytes each (%d bytes after compression)\n",
             FLAGS_value_size,
             static_cast<int>(FLAGS_value_size * FLAGS_compression_ratio + 0.5));
-    fprintf(stdout, "Entries:    %d\n", num_);
+    fprintf(stdout, "Entries:    %ld\n", num_);
     fprintf(stdout, "RawSize:    %.1f MB (estimated)\n",
             ((static_cast<int64_t>(kKeySize + FLAGS_value_size) * num_)
              / 1048576.0));
@@ -946,7 +946,7 @@ class Benchmark {
 	Duration duration(test_duration, num_);
     if (num_ != FLAGS_num) {
       char msg[100];
-      snprintf(msg, sizeof(msg), "(%d ops)", num_);
+      snprintf(msg, sizeof(msg), "(%ld ops)", num_);
       thread->stats.AddMessage(msg);
     }
 
@@ -975,14 +975,12 @@ class Benchmark {
       fprintf(stderr, "open_cursor error: %s\n", wiredtiger_strerror(ret));
       exit(1);
     }
-	int i = 0;
+	unsigned long i = 0;
 	while (!duration.Done(entries_per_batch_)) {
       for (int j = 0; j < entries_per_batch_; j++) {
-        int k = seq ? (i+j+stagger) % FLAGS_num : (shuff ? shuff[(i+j+stagger)%FLAGS_num] : (thread->rand.Next() % FLAGS_num));
-        if (k == 0)
-          continue; /* Wired Tiger does not support 0 keys. */
+        unsigned long k = seq ? (i+j+stagger) % FLAGS_num : (shuff ? shuff[(i+j+stagger)%FLAGS_num] : (thread->rand.Next() % FLAGS_num));
         char key[100];
-        snprintf(key, sizeof(key), "%016d", k);
+        snprintf(key, sizeof(key), "%016lx", k);
         cursor->set_key(cursor, key);
         std::string value = gen.Generate(value_size_).ToString();
         cursor->set_value(cursor, value.c_str());
@@ -1011,14 +1009,14 @@ class Benchmark {
     }
 
     int64_t bytes = 0;
-    int i = 0;
-    int k;
+    unsigned long i = 0;
+    unsigned long k;
     if (FLAGS_stagger) {
       k = (FLAGS_num / FLAGS_threads) * thread->tid + 1;
-      snprintf(key, sizeof(key), "%016d", k);
+      snprintf(key, sizeof(key), "%016lx", k);
       cursor->set_key(cursor, key);
       if (cursor->search(cursor) != 0) {
-        fprintf(stderr, "cursor search for key %d error: %s\n", k, wiredtiger_strerror(ret));
+        fprintf(stderr, "cursor search for key %lx error: %s\n", k, wiredtiger_strerror(ret));
         exit(1);
       }
     }
@@ -1034,11 +1032,11 @@ repeat:
      * Allow repetitive reads, simply wrapping back if the number of
      * reads exceeds the number of keys to read.
      */
-    sscanf(ckey, "%d", &k);
+    sscanf(ckey, "%lx", &k);
     if (k == (FLAGS_num - 1) && i < reads_ && cursor->reset(cursor) == 0)
   goto repeat;
     if (ret != 0) {
-      fprintf(stderr, "ReadSeq: cursor_next ckey %s k %d i %d error: %s\n", ckey, k, i, wiredtiger_strerror(ret));
+      fprintf(stderr, "ReadSeq: cursor_next ckey %s k %lx i %lu error: %s\n", ckey, k, i, wiredtiger_strerror(ret));
       exit(1);
     }
 
@@ -1057,14 +1055,14 @@ repeat:
     }
 
     int64_t bytes = 0;
-    int i = 0;
-    int k;
+    unsigned long i = 0;
+    unsigned long k;
     if (FLAGS_stagger) {
       k = (FLAGS_num / FLAGS_threads) * thread->tid + 1;
-      snprintf(key, sizeof(key), "%016d", k);
+      snprintf(key, sizeof(key), "%016lx", k);
       cursor->set_key(cursor, key);
       if (cursor->search(cursor) != 0) {
-        fprintf(stderr, "cursor search for key %d error: %s\n", k, wiredtiger_strerror(ret));
+        fprintf(stderr, "cursor search for key %lx error: %s\n", k, wiredtiger_strerror(ret));
         exit(1);
       }
       // Make sure ckey has a valid value in it in case we are at the front
@@ -1083,12 +1081,12 @@ repeat:
      * Allow repetitive reads, simply wrapping back if the number of
      * reads exceeds the number of keys to read.
      */
-    sscanf(ckey, "%d", &k);
+    sscanf(ckey, "%lx", &k);
     if (k == 1 && i < reads_ && cursor->reset(cursor) == 0)
   goto repeat;
 
     if (ret != 0) {
-      fprintf(stderr, "ReadReverse: cursor_next ckey %s k %d i %d error: %s\n", ckey, k, i, wiredtiger_strerror(ret));
+      fprintf(stderr, "ReadReverse: cursor_next ckey %s k %lx i %lu error: %s\n", ckey, k, i, wiredtiger_strerror(ret));
       exit(1);
     }
     cursor->close(cursor);
@@ -1108,11 +1106,8 @@ repeat:
     Duration duration(FLAGS_duration, reads_);
     while (!duration.Done(1)) {
       char key[100];
-      const int k = thread->rand.Next() % FLAGS_num;
-      if (k == 0) {
-        continue; /* Wired Tiger does not support 0 keys. */
-      }
-      snprintf(key, sizeof(key), "%016d", k);
+      const unsigned long k = thread->rand.Next() % FLAGS_num;
+      snprintf(key, sizeof(key), "%016lx", k);
       cursor->set_key(cursor, key);
       read++;
       if (cursor->search(cursor) == 0) {
@@ -1136,8 +1131,8 @@ repeat:
     }
     for (int i = 0; i < reads_; i++) {
       char key[100];
-      const int k = thread->rand.Next() % FLAGS_num;
-      snprintf(key, sizeof(key), "%016d.", k);
+      const unsigned long k = thread->rand.Next() % FLAGS_num;
+      snprintf(key, sizeof(key), "%016lx.", k);
       cursor->set_key(cursor, key);
       cursor->search(cursor);
       thread->stats.FinishedSingleOp();
@@ -1156,8 +1151,8 @@ repeat:
     const int range = (FLAGS_num + 99) / 100;
     for (int i = 0; i < reads_; i++) {
       char key[100];
-      const int k = thread->rand.Next() % range;
-      snprintf(key, sizeof(key), "%016d", k);
+      const unsigned long k = thread->rand.Next() % range;
+      snprintf(key, sizeof(key), "%016lx", k);
       cursor->set_key(cursor, key);
       cursor->search(cursor);
       thread->stats.FinishedSingleOp();
@@ -1178,8 +1173,8 @@ repeat:
 	Duration duration(FLAGS_duration, reads_);
 	while (!duration.Done(1)) {
       char key[100];
-      const int k = thread->rand.Next() % FLAGS_num;
-      snprintf(key, sizeof(key), "%016d", k);
+      const unsigned long k = thread->rand.Next() % FLAGS_num;
+      snprintf(key, sizeof(key), "%016lx", k);
       cursor->set_key(cursor, key);
 	  read++;
       if(cursor->search(cursor) == 0) {
@@ -1213,11 +1208,9 @@ repeat:
 	int64_t i = 0;
     while (!duration.Done(entries_per_batch_)) {
       for (int j = 0; j < entries_per_batch_; j++) {
-        int k = seq ? i+j : shuff ? shuff[i+j] : (thread->rand.Next() % FLAGS_num);
+        unsigned long k = seq ? i+j : shuff ? shuff[i+j] : (thread->rand.Next() % FLAGS_num);
         char key[100];
-        snprintf(key, sizeof(key), "%016d", k);
-        if (k == 0)
-          continue; /* Wired Tiger does not support 0 keys. */
+        snprintf(key, sizeof(key), "%016lx", k);
   cursor->set_key(cursor, key);
   if ((ret = cursor->remove(cursor)) != 0) {
     if (FLAGS_threads == 1 || ret != WT_NOTFOUND) {
@@ -1294,8 +1287,8 @@ repeat:
           }
         }
 
-        const int k = thread->rand.Next() % FLAGS_num;
-        snprintf(key, sizeof(key), "%016d", k);
+        const unsigned long k = thread->rand.Next() % FLAGS_num;
+        snprintf(key, sizeof(key), "%016lx", k);
         cursor->set_key(cursor, key);
         std::string value = gen.Generate(value_size_).ToString();
         cursor->set_value(cursor, value.c_str());

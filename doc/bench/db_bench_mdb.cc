@@ -54,10 +54,10 @@ static const char* FLAGS_benchmarks =
     ;
 
 // Number of key/values to place in database
-static int FLAGS_num = 1000000;
+static int64_t FLAGS_num = 1000000;
 
 // Number of read operations to do.  If negative, do FLAGS_num reads.
-static int FLAGS_reads = -1;
+static int64_t FLAGS_reads = -1;
 
 static int FLAGS_cleanmem = 0;
 
@@ -353,7 +353,7 @@ struct SharedState {
 // Per-thread state for concurrent executions of the same benchmark.
 struct ThreadState {
   int tid;             // 0..n-1 when running in n threads
-  Random rand;         // Has different seeds for different threads
+  Random64 rand;         // Has different seeds for different threads
   Stats stats;
   SharedState* shared;
 
@@ -412,10 +412,10 @@ class Benchmark {
   MDB_env *db_;
   MDB_dbi dbi_;
   int db_num_;
-  int num_;
+  int64_t num_;
   int value_size_;
   int entries_per_batch_;
-  int reads_;
+  int64_t reads_;
   DBFlags dbflags_;
   Order write_order_;
 
@@ -426,7 +426,7 @@ class Benchmark {
     fprintf(stdout, "Values:     %d bytes each (%d bytes after compression)\n",
             FLAGS_value_size,
             static_cast<int>(FLAGS_value_size * FLAGS_compression_ratio + 0.5));
-    fprintf(stdout, "Entries:    %d\n", num_);
+    fprintf(stdout, "Entries:    %ld\n", num_);
     fprintf(stdout, "RawSize:    %.1f MB (estimated)\n",
             ((static_cast<int64_t>(kKeySize + FLAGS_value_size) * num_)
              / 1048576.0));
@@ -772,7 +772,7 @@ class Benchmark {
 	Duration duration(test_duration, num_);
     if (num_ != FLAGS_num) {
       char msg[100];
-      snprintf(msg, sizeof(msg), "(%d ops)", num_);
+      snprintf(msg, sizeof(msg), "(%ld ops)", num_);
       thread->stats.AddMessage(msg);
     }
 
@@ -783,7 +783,8 @@ class Benchmark {
 	MDB_val mkey, mval;
 	MDB_txn *txn;
 	char key[100];
-	int ikey, flag = 0;
+	int flag = 0;
+	unsigned long ikey;
 	if (FLAGS_intkey) {
 		mkey.mv_data = &ikey;
 		mkey.mv_size = sizeof(ikey);
@@ -796,7 +797,7 @@ class Benchmark {
 	int64_t bytes = 0;
 //	flag |= MDB_RESERVE;
     // Write to database
-	int i = 0;
+	unsigned long i = 0;
 	while (!duration.Done(entries_per_batch_)) {
 	  MDB_cursor *mc;
 	  mdb_txn_begin(db_, NULL, 0, &txn);
@@ -804,12 +805,12 @@ class Benchmark {
 	  
 	  for (int j=0; j < entries_per_batch_; j++) {
 
-      const int k = (write_order_ == SEQUENTIAL) ? i+j : (shuff ? shuff[i+j] : (thread->rand.Next() % FLAGS_num));
+      const unsigned long k = (write_order_ == SEQUENTIAL) ? i+j : (shuff ? shuff[i+j] : (thread->rand.Next() % FLAGS_num));
 	  int rc;
 	  if (FLAGS_intkey)
 	  	  ikey = k;
 	  else
-		  mkey.mv_size = snprintf(key, sizeof(key), "%016d", k);
+		  mkey.mv_size = snprintf(key, sizeof(key), "%016lx", k);
       bytes += value_size_ + mkey.mv_size;
 
 	  mval.mv_data = (void *)gen.Generate(value_size_).data();
@@ -884,11 +885,11 @@ class Benchmark {
 	mdb_txn_reset(txn);
 	Duration duration(FLAGS_duration, reads_);
     while (!duration.Done(1)) {
-      const int k = thread->rand.Next() % FLAGS_num;
+      const unsigned long k = thread->rand.Next() % FLAGS_num;
 	  if (FLAGS_intkey)
 		  ikey = k;
 	  else
-		  key.mv_size = snprintf(ckey, sizeof(ckey), "%016d", k);
+		  key.mv_size = snprintf(ckey, sizeof(ckey), "%016lx", k);
 	  mdb_txn_renew(txn);
 	  mdb_cursor_renew(txn, cursor);
 	  read++;
@@ -947,7 +948,7 @@ class Benchmark {
 	  MDB_val mkey, mval;
 	  MDB_txn *txn;
 	  char key[100];
-	  const int k = thread->rand.Next() % FLAGS_num;
+	  const unsigned long k = thread->rand.Next() % FLAGS_num;
 	  int rc, ikey;
 
 	  if (FLAGS_intkey) {
@@ -956,7 +957,7 @@ class Benchmark {
 		ikey = k;
 	  } else {
 		mkey.mv_data = key;
-		mkey.mv_size = snprintf(key, sizeof(key), "%016d", k);
+		mkey.mv_size = snprintf(key, sizeof(key), "%016lx", k);
 	  }
 	  mval.mv_data = (void *)gen.Generate(value_size_).data();
 	  mval.mv_size = value_size_;
@@ -996,51 +997,51 @@ int main(int argc, char** argv) {
   std::string default_db_path;
   for (int i = 1; i < argc; i++) {
     double d;
-    int n;
+    size_t n;
     char junk;
     if (leveldb::Slice(argv[i]).starts_with("--benchmarks=")) {
       FLAGS_benchmarks = argv[i] + strlen("--benchmarks=");
     } else if (sscanf(argv[i], "--compression_ratio=%lf%c", &d, &junk) == 1) {
       FLAGS_compression_ratio = d;
-    } else if (sscanf(argv[i], "--histogram=%d%c", &n, &junk) == 1 &&
+    } else if (sscanf(argv[i], "--histogram=%zd%c", &n, &junk) == 1 &&
                (n == 0 || n == 1)) {
       FLAGS_histogram = n;
-    } else if (sscanf(argv[i], "--use_existing_db=%d%c", &n, &junk) == 1 &&
+    } else if (sscanf(argv[i], "--use_existing_db=%zd%c", &n, &junk) == 1 &&
                (n == 0 || n == 1)) {
       FLAGS_use_existing_db = n;
-    } else if (sscanf(argv[i], "--metasync=%d%c", &n, &junk) == 1 &&
+    } else if (sscanf(argv[i], "--metasync=%zd%c", &n, &junk) == 1 &&
                (n == 0 || n == 1)) {
       FLAGS_metasync = n;
-    } else if (sscanf(argv[i], "--writemap=%d%c", &n, &junk) == 1 &&
+    } else if (sscanf(argv[i], "--writemap=%zd%c", &n, &junk) == 1 &&
                (n == 0 || n == 1)) {
       FLAGS_writemap = n;
-    } else if (sscanf(argv[i], "--intkey=%d%c", &n, &junk) == 1 &&
+    } else if (sscanf(argv[i], "--intkey=%zd%c", &n, &junk) == 1 &&
                (n == 0 || n == 1)) {
       FLAGS_intkey = n;
-    } else if (sscanf(argv[i], "--num=%d%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--num=%zd%c", &n, &junk) == 1) {
       FLAGS_num = n;
-    } else if (sscanf(argv[i], "--batch=%d%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--batch=%zd%c", &n, &junk) == 1) {
       FLAGS_batch = n;
-    } else if (sscanf(argv[i], "--reads=%d%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--reads=%zd%c", &n, &junk) == 1) {
       FLAGS_reads = n;
-    } else if (sscanf(argv[i], "--threads=%d%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--threads=%zd%c", &n, &junk) == 1) {
       FLAGS_threads = n;
-    } else if (sscanf(argv[i], "--duration=%d%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--duration=%zd%c", &n, &junk) == 1) {
       FLAGS_duration = n;
-    } else if (sscanf(argv[i], "--stats_interval=%d%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--stats_interval=%zd%c", &n, &junk) == 1) {
       FLAGS_stats_interval = n;
-    } else if (sscanf(argv[i], "--writes_per_second=%d%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--writes_per_second=%zd%c", &n, &junk) == 1) {
       FLAGS_writes_per_second = n;
-    } else if (sscanf(argv[i], "--value_size=%d%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--value_size=%zd%c", &n, &junk) == 1) {
       FLAGS_value_size = n;
-    } else if (sscanf(argv[i], "--cleanmem=%d%c", &n, &junk) == 1) {
+    } else if (sscanf(argv[i], "--cleanmem=%zd%c", &n, &junk) == 1) {
       FLAGS_cleanmem = n;
     } else if (strncmp(argv[i], "--db=", 5) == 0) {
       FLAGS_db = argv[i] + 5;
-    } else if (sscanf(argv[i], "--shuffle=%d%c", &n, &junk) == 1 &&
+    } else if (sscanf(argv[i], "--shuffle=%zd%c", &n, &junk) == 1 &&
                (n == 0 || n == 1)) {
       FLAGS_shuffle = n;
-    } else if (sscanf(argv[i], "--readahead=%d%c", &n, &junk) == 1 &&
+    } else if (sscanf(argv[i], "--readahead=%zd%c", &n, &junk) == 1 &&
                (n == 0 || n == 1)) {
       FLAGS_readahead = n;
     } else {

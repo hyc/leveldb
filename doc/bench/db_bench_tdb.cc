@@ -57,10 +57,10 @@ static const char* FLAGS_benchmarks =
     ;
 
 // Number of key/values to place in database
-static int FLAGS_num = 1000000;
+static int64_t FLAGS_num = 1000000;
 
 // Number of read operations to do.  If negative, do FLAGS_num reads.
-static int FLAGS_reads = -1;
+static int64_t FLAGS_reads = -1;
 
 static int FLAGS_cleanmem = 0;
 
@@ -371,7 +371,7 @@ struct SharedState {
 // Per-thread state for concurrent executions of the same benchmark.
 struct ThreadState {
   int tid;             // 0..n-1 when running in n threads
-  Random rand;         // Has different seeds for different threads
+  Random64 rand;         // Has different seeds for different threads
   Stats stats;
   SharedState* shared;
 
@@ -428,10 +428,10 @@ class Benchmark {
 
  private:
   TDB_CONTEXT *db_;
-  int num_;
+  int64_t num_;
   int value_size_;
   int entries_per_batch_;
-  int reads_;
+  int64_t reads_;
   DBFlags dbflags_;
   Order write_order_;
 
@@ -442,7 +442,7 @@ class Benchmark {
     fprintf(stdout, "Values:     %d bytes each (%d bytes after compression)\n",
             FLAGS_value_size,
             static_cast<int>(FLAGS_value_size * FLAGS_compression_ratio + 0.5));
-    fprintf(stdout, "Entries:    %d\n", num_);
+    fprintf(stdout, "Entries:    %ld\n", num_);
     fprintf(stdout, "RawSize:    %.1f MB (estimated)\n",
             ((static_cast<int64_t>(kKeySize + FLAGS_value_size) * num_)
              / 1048576.0));
@@ -769,7 +769,7 @@ class Benchmark {
 	Duration duration(test_duration, num_);
     if (num_ != FLAGS_num) {
       char msg[100];
-      snprintf(msg, sizeof(msg), "(%d ops)", num_);
+      snprintf(msg, sizeof(msg), "(%ld ops)", num_);
       thread->stats.AddMessage(msg);
     }
 
@@ -783,9 +783,9 @@ class Benchmark {
 	tkey.dptr = (unsigned char *)key;
 	int64_t bytes = 0;
     // Write to database
-	int i = 0, rc;
+	unsigned long i = 0;
 	while (!duration.Done(entries_per_batch_)) {
-	  rc = tdb_transaction_start(db_);
+	  int rc = tdb_transaction_start(db_);
       if (rc < 0) {
         fprintf(stderr, "txn start: %s\n", tdb_errorstr(db_));
 		break;
@@ -793,8 +793,8 @@ class Benchmark {
 	  
 	  for (int j=0; j < entries_per_batch_; j++) {
 
-      const int k = (write_order_ == SEQUENTIAL) ? i+j : (shuff ? shuff[i+j] : (thread->rand.Next() % FLAGS_num));
-	  tkey.dsize = snprintf(key, sizeof(key), "%016d", k);
+      const unsigned long k = (write_order_ == SEQUENTIAL) ? i+j : (shuff ? shuff[i+j] : (thread->rand.Next() % FLAGS_num));
+	  tkey.dsize = snprintf(key, sizeof(key), "%016lx", k);
       bytes += value_size_ + tkey.dsize;
 
 	  tdata.dptr = (unsigned char *)gen.Generate(value_size_).data();
@@ -844,17 +844,13 @@ class Benchmark {
 	size_t read = 0;
 	size_t found = 0;
     char ckey[100];
-	int ikey;
 
 	key.dptr = (unsigned char *)ckey;
 
 	Duration duration(FLAGS_duration, reads_);
     while (!duration.Done(1)) {
-      const int k = thread->rand.Next() % FLAGS_num;
-	  if (FLAGS_intkey)
-		  ikey = k;
-	  else
-		  key.dsize = snprintf(ckey, sizeof(ckey), "%016d", k);
+      const unsigned long k = thread->rand.Next() % FLAGS_num;
+	  key.dsize = snprintf(ckey, sizeof(ckey), "%016lx", k);
 	  read++;
 	  data = tdb_fetch(db_, key);
 	  if (data.dptr) {
@@ -932,11 +928,11 @@ class Benchmark {
 
 	  TDB_DATA tkey, tdata;
 	  char key[100];
-	  const int k = thread->rand.Next() % FLAGS_num;
+	  const unsigned long k = thread->rand.Next() % FLAGS_num;
 	  int rc, ikey;
 
 	  tkey.dptr = (unsigned char *)key;
-	  tkey.dsize = snprintf(key, sizeof(key), "%016d", k);
+	  tkey.dsize = snprintf(key, sizeof(key), "%016lx", k);
 	  tdata.dptr = (unsigned char *)gen.Generate(value_size_).data();
 	  tdata.dsize = value_size_;
 	  rc = tdb_transaction_start(db_);

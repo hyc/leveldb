@@ -169,8 +169,8 @@ class Benchmark {
  private:
   sqlite4* db_;
   int db_num_;
-  int num_;
-  int reads_;
+  int64_t num_;
+  int64_t reads_;
   double start_;
   double last_op_finish_;
   int64_t bytes_;
