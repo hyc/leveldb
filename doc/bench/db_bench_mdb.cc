@@ -757,6 +757,7 @@ class Benchmark {
 	rc = mdb_env_create(&db_);
 	msize = FLAGS_num*32L*FLAGS_value_size/10;
 	rc = mdb_env_set_mapsize(db_, msize);
+	rc = mdb_env_set_maxreaders(db_, FLAGS_threads + 2);
 	rc = mdb_env_open(db_, file_name, env_opt, 0664);
 	if (rc) {
       fprintf(stderr, "open error: %s\n", mdb_strerror(rc));
