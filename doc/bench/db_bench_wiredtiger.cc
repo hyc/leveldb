@@ -1021,7 +1021,7 @@ class Benchmark {
       }
     }
 repeat:
-    while ((ret = cursor->next(cursor)) == 0 && i < reads_) {
+    while (i < reads_ && (ret = cursor->next(cursor)) == 0) {
       cursor->get_key(cursor, &ckey);
       cursor->get_value(cursor, &cvalue);
       thread->stats.FinishedSingleOp();
@@ -1070,7 +1070,7 @@ repeat:
       cursor->get_key(cursor, &ckey);
     }
 repeat:
-    while ((ret = cursor->prev(cursor)) == 0 && i < reads_) {
+    while (i < reads_ && (ret = cursor->prev(cursor)) == 0) {
       cursor->get_key(cursor, &ckey);
       cursor->get_value(cursor, &cvalue);
       thread->stats.FinishedSingleOp();
