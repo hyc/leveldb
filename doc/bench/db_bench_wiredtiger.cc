@@ -999,6 +999,13 @@ class Benchmark {
         fprintf(stderr, "commit_transaction error: %s\n", wiredtiger_strerror(ret));
         exit(1);
 	  }
+	  if (sync_) {
+	    ret = thread->session->checkpoint(thread->session, "drop=(from=all)");
+	    if (ret != 0) {
+          fprintf(stderr, "checkpoint error: %s\n", wiredtiger_strerror(ret));
+          exit(1);
+	    }
+	  }
 	  i += entries_per_batch_;
     }
     cursor->close(cursor);
