@@ -379,7 +379,7 @@ struct ThreadState {
         rand(seeds[index]) {
     if (index == 0 && shuff)
 		rand.Shuffle(shuff, FLAGS_num);
-    conn->open_session(conn, NULL, NULL, &session);
+    conn->open_session(conn, NULL, "isolation=snapshot", &session);
     assert(session != NULL);
   }
   ~ThreadState() {
@@ -881,7 +881,7 @@ class Benchmark {
     assert(conn_ != NULL);
 
     WT_SESSION *session;
-    conn_->open_session(conn_, NULL, NULL, &session);
+    conn_->open_session(conn_, NULL, "isolation=snapshot", &session);
     assert(session != NULL);
 
     char uri[100];
@@ -955,11 +955,8 @@ class Benchmark {
     int stagger = 0;
     std::stringstream txn_config;
     txn_config.str("");
-    txn_config << "isolation=snapshot";
     if (sync_)
-        txn_config << ",sync=full";
-    else
-        txn_config << ",sync=none";
+        txn_config << "sync=true";
 
     WT_CURSOR *cursor;
     std::stringstream cur_config;
@@ -977,6 +974,11 @@ class Benchmark {
     }
 	unsigned long i = 0;
 	while (!duration.Done(entries_per_batch_)) {
+	  ret = thread->session->begin_transaction(thread->session, txn_config.str().c_str());
+	  if (ret != 0) {
+        fprintf(stderr, "begin_transaction error: %s\n", wiredtiger_strerror(ret));
+        exit(1);
+	  }
       for (int j = 0; j < entries_per_batch_; j++) {
         unsigned long k = seq ? (i+j+stagger) % FLAGS_num : (shuff ? shuff[(i+j+stagger)%FLAGS_num] : (thread->rand.Next() % FLAGS_num));
         char key[100];
@@ -992,6 +994,11 @@ class Benchmark {
         thread->stats.FinishedSingleOp();
         bytes += value_size_ + strlen(key);
       }
+	  ret = thread->session->commit_transaction(thread->session, NULL);
+	  if (ret != 0) {
+        fprintf(stderr, "commit_transaction error: %s\n", wiredtiger_strerror(ret));
+        exit(1);
+	  }
 	  i += entries_per_batch_;
     }
     cursor->close(cursor);
@@ -1199,11 +1206,8 @@ repeat:
     }
     std::stringstream txn_config;
     txn_config.str("");
-    txn_config << "isolation=snapshot";
     if (sync_)
-      txn_config << ",sync=full";
-    else
-      txn_config << ",sync=none";
+      txn_config << "sync=true";
 	Duration duration(seq ? 0 : FLAGS_duration, num_);
 	int64_t i = 0;
     while (!duration.Done(entries_per_batch_)) {
