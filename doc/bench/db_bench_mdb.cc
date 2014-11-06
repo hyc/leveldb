@@ -840,6 +840,7 @@ class Benchmark {
 	mdb_txn_begin(db_, NULL, MDB_RDONLY, &txn);
 	mdb_cursor_open(txn, dbi_, &cursor);
     while (mdb_cursor_get(cursor, &key, &data, MDB_PREV) == 0) {
+	  *(volatile char *)data.mv_data;
       bytes += key.mv_size + data.mv_size;
       thread->stats.FinishedSingleOp();
     }
@@ -857,6 +858,7 @@ class Benchmark {
 	mdb_txn_begin(db_, NULL, MDB_RDONLY, &txn);
 	mdb_cursor_open(txn, dbi_, &cursor);
     while (mdb_cursor_get(cursor, &key, &data, MDB_NEXT) == 0) {
+	  *(volatile char *)data.mv_data;
       bytes += key.mv_size + data.mv_size;
       thread->stats.FinishedSingleOp();
     }
@@ -895,8 +897,10 @@ class Benchmark {
 	  mdb_txn_renew(txn);
 	  mdb_cursor_renew(txn, cursor);
 	  read++;
-	  if (!mdb_cursor_get(cursor, &key, &data, MDB_SET))
+	  if (!mdb_cursor_get(cursor, &key, &data, MDB_SET)) {
+	    *(volatile char *)data.mv_data;
 		found++;
+	  }
       thread->stats.FinishedSingleOp();
 	  mdb_txn_reset(txn);
     }
