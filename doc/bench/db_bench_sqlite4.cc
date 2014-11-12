@@ -194,6 +194,7 @@ class Benchmark {
              / 1048576.0));
     PrintWarnings();
     fprintf(stdout, "------------------------------------------------\n");
+	fflush(stdout);
   }
 
   void PrintWarnings() {
@@ -209,11 +210,11 @@ class Benchmark {
   }
 
   void PrintEnvironment() {
-    fprintf(stderr, "SQLite:     version %s\n", SQLITE4_VERSION);
+    fprintf(stdout, "SQLite:     version %s\n", SQLITE4_VERSION);
 
 #if defined(__linux)
     time_t now = time(NULL);
-    fprintf(stderr, "Date:       %s", ctime(&now));  // ctime() adds newline
+    fprintf(stdout, "Date:       %s", ctime(&now));  // ctime() adds newline
 
     FILE* cpuinfo = fopen("/proc/cpuinfo", "r");
     if (cpuinfo != NULL) {
@@ -236,8 +237,8 @@ class Benchmark {
         }
       }
       fclose(cpuinfo);
-      fprintf(stderr, "CPU:        %d * %s\n", num_cpus, cpu_type.c_str());
-      fprintf(stderr, "CPUCache:   %s\n", cache_size.c_str());
+      fprintf(stdout, "CPU:        %d * %s\n", num_cpus, cpu_type.c_str());
+      fprintf(stdout, "CPUCache:   %s\n", cache_size.c_str());
     }
 #endif
   }
