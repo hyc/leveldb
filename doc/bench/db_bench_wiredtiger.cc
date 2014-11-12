@@ -1125,9 +1125,13 @@ repeat:
       snprintf(key, sizeof(key), "%016lx", k);
       cursor->set_key(cursor, key);
       read++;
-      if (cursor->search(cursor) == 0) {
-       found++;
-      }
+      ret = cursor->search(cursor);
+	  if (ret == 0) {
+	    found++;
+	  } else if (ret != WT_NOTFOUND) {
+        fprintf(stderr, "cursor search error: %s\n", wiredtiger_strerror(ret));
+        exit(1);
+	  }
       thread->stats.FinishedSingleOp();
     }
     cursor->close(cursor);
@@ -1309,7 +1313,11 @@ repeat:
           fprintf(stderr, "set error: %s\n", wiredtiger_strerror(ret));
           exit(1);
         }
-        (void)cursor->reset(cursor);
+        ret = cursor->reset(cursor);
+        if (ret != 0) {
+          fprintf(stderr, "cursor reset error: %s\n", wiredtiger_strerror(ret));
+          exit(1);
+        }
         thread->stats.FinishedSingleOp();
 
         ++num_writes;
