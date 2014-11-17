@@ -813,7 +813,7 @@ class Benchmark {
 	int64_t bytes = 0;
 
 	key.flags = 0; data.flags = 0;
-	db_->txn_begin(db_, NULL, &txn, 0);
+	db_->txn_begin(db_, NULL, &txn, DB_READ_COMMITTED);
 	dbh_->cursor(dbh_, txn, &cursor, 0);
     while (cursor->get(cursor, &key, &data, DB_PREV) == 0) {
       bytes += key.size + data.size;
@@ -831,7 +831,7 @@ class Benchmark {
 	int64_t bytes = 0;
 
 	key.flags = 0; data.flags = 0;
-	db_->txn_begin(db_, NULL, &txn, 0);
+	db_->txn_begin(db_, NULL, &txn, DB_READ_COMMITTED);
 	dbh_->cursor(dbh_, txn, &cursor, 0);
     while (cursor->get(cursor, &key, &data, DB_NEXT) == 0) {
       bytes += key.size + data.size;
