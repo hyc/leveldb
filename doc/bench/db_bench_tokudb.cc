@@ -765,7 +765,7 @@ class Benchmark {
 	rc = db_->set_cachesize(db_, FLAGS_cache_size / (1 << 30), FLAGS_cache_size % (1 << 30), 1);
     rc = db_->set_lk_max_memory(db_, FLAGS_lk_max_memory);
     db_->change_fsync_log_period(db_, FLAGS_sync_period);
-	txn_flags =	DB_RECOVER|DB_INIT_LOCK|DB_INIT_LOG|DB_INIT_TXN|DB_INIT_MPOOL|DB_THREAD|DB_PRIVATE|DB_CREATE;
+	txn_flags =	DB_INIT_LOCK|DB_INIT_LOG|DB_INIT_TXN|DB_INIT_MPOOL|DB_THREAD|DB_PRIVATE|DB_CREATE;
 	rc = db_->open(db_, file_name, txn_flags, 0664);
 	if (rc) {
       fprintf(stderr, "open error: %s\n", db_strerror(rc));
