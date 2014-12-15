@@ -56,7 +56,8 @@ TESTS = \
 PROGRAMS = db_bench leveldbutil $(TESTS)
 BENCHMARKS = db_bench db_bench_sqlite3 db_bench_tree_db db_bench_mdb \
 	db_bench_bdb db_bench_sophia db_bench_ntdb db_bench_tdb db_bench_tokudb \
-	db_bench_basho db_bench_hyper db_bench_rocksdb db_bench_wiredtiger
+	db_bench_basho db_bench_hyper db_bench_rocksdb db_bench_wiredtiger \
+	db_bench_mdbm
 
 BASHO = ../basho_leveldb
 HYPER = ../HyperLevelDB
@@ -178,6 +179,12 @@ db_bench_ydb: doc/bench/db_bench_ydb.o $(LIBRARY) $(TESTUTIL)
 
 db_bench_wiredtiger: doc/bench/db_bench_wiredtiger.o $(LIBRARY) $(TESTUTIL)
 	$(CXX) doc/bench/db_bench_wiredtiger.o $(LIBRARY) $(TESTUTIL) -o $@ $(LDFLAGS) /usr/local/lib/libwiredtiger.a -ldl
+
+db_bench_mdbm: doc/bench/db_bench_mdbm.o $(LIBRARY) $(TESTUTIL)
+	$(CXX) doc/bench/db_bench_mdbm.o $(LIBRARY) $(TESTUTIL) -o $@ $(LDFLAGS) /usr/local/lib/libmdbm.a -lcrypto
+
+doc/bench/db_bench_mdbm.o: doc/bench/db_bench_mdbm.cc
+	$(CXX) -I/usr/local/include/mdbm $(CXXFLAGS) -DHAVE_CONFIG_H -c $< -o $@
 
 leveldbutil: db/leveldb_main.o $(LIBOBJECTS)
 	$(CXX) $(LDFLAGS) db/leveldb_main.o $(LIBOBJECTS) -o $@ $(LIBS)
