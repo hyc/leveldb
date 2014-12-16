@@ -729,6 +729,7 @@ class Benchmark {
     void Open(DBFlags flags) {
     assert(db_ == NULL);
 	int rc;
+	uint64_t dbsize;
 
     char file_name[100], cmd[200];
     db_num_++;
@@ -742,11 +743,17 @@ class Benchmark {
 	int env_opt = MDBM_O_RDWR|MDBM_O_CREAT|MDBM_SINGLE_ARCH|MDBM_PARTITIONED_LOCKS;
 
     // Create tuning options and open the database
-	db_ = mdbm_open(file_name, env_opt, 0664, FLAGS_page_size, FLAGS_num * (FLAGS_value_size + 16));
+	dbsize = FLAGS_num * (FLAGS_value_size + 16);
+	db_ = mdbm_open(file_name, env_opt, 0664, FLAGS_page_size, dbsize);
 	if (!db_) {
       fprintf(stderr, "open error: %s\n", strerror(errno));
 	  exit(1);
     }
+#if 0
+	if (write_order_ == SEQUENTIAL && entries_per_batch_ > 1) {
+		mdbm_pre_split(db_, dbsize / FLAGS_page_size);
+	}
+#endif
   }
 
   void Write(ThreadState *thread) {
@@ -832,10 +839,12 @@ class Benchmark {
 	  key.dptr = ckey;
 	  key.dsize = snprintf(ckey, sizeof(ckey), "%016lx", k);
 	  read++;
+	  mdbm_lock_smart(thread->dbt, &key, 0);
 	  if (!mdbm_fetch_r(thread->dbt, &key, &data, &it)) {
 	    *(volatile char *)data.dptr;
 		found++;
 	  }
+	  mdbm_unlock_smart(thread->dbt, &key, 0);
       thread->stats.FinishedSingleOp();
     }
 	char msg[100];
@@ -962,8 +971,8 @@ int main(int argc, char** argv) {
       FLAGS_writes_per_second = n;
     } else if (sscanf(argv[i], "--value_size=%zd%c", &n, &junk) == 1) {
       FLAGS_value_size = n;
-    } else if (sscanf(argv[i], "--cleanmem=%zd%c", &n, &junk) == 1) {
-      FLAGS_cleanmem = n;
+    } else if (sscanf(argv[i], "--page_size=%zd%c", &n, &junk) == 1) {
+      FLAGS_page_size = n;
     } else if (strncmp(argv[i], "--db=", 5) == 0) {
       FLAGS_db = argv[i] + 5;
     } else if (sscanf(argv[i], "--shuffle=%zd%c", &n, &junk) == 1 &&
