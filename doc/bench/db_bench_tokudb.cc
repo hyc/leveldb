@@ -1028,6 +1028,8 @@ int main(int argc, char** argv) {
       FLAGS_sync_period = n;
     } else if (sscanf(argv[i], "--direct_io=%zd%c", &n, &junk) == 1) {
       FLAGS_direct_io = (n != 0);
+    } else if (sscanf(argv[i], "--compression_method=%zd%c", &n, &junk) == 1) {
+      FLAGS_compression_method = (toku_compression_method)n;
     } else {
       fprintf(stderr, "Invalid flag '%s'\n", argv[i]);
       exit(1);

@@ -93,6 +93,9 @@ static int FLAGS_value_size = 100;
 // their original size after compression
 static double FLAGS_compression_ratio = 0.5;
 
+// Disable compression by default
+static int FLAGS_compression = 0;
+
 // Print histogram of operation timings
 static bool FLAGS_histogram = false;
 
@@ -873,9 +876,8 @@ class Benchmark {
     /* TODO: Translate write_buffer_size - maybe it's chunk size?
     options.write_buffer_size = FLAGS_write_buffer_size;
     */
-#if 0 /* ndef SYMAS_CONFIG */
-    config << ",extensions=[libwiredtiger_snappy.so]";
-#endif
+	if (FLAGS_compression)
+      config << ",extensions=[libwiredtiger_snappy.so]";
     //config << ",verbose=[lsm]";
     Env::Default()->CreateDir(FLAGS_db);
     wiredtiger_open(FLAGS_db, NULL, config.str().c_str(), &conn_);
@@ -919,9 +921,9 @@ class Benchmark {
           config << ",bloom=false";
         config << ")";
       }
-#if 0 /* ndef SYMAS_CONFIG */
-      config << ",block_compressor=snappy";
-#endif
+	  if (FLAGS_compression)
+        config << ",block_compressor=snappy";
+
       fprintf(stderr, "Creating %s with config %s\n",uri_.c_str(), config.str().c_str());
       int ret = session->create(session, uri_.c_str(), config.str().c_str());
       if (ret != 0) {
@@ -1452,6 +1454,8 @@ int main(int argc, char** argv) {
     } else if (sscanf(argv[i], "--use_lsm=%zd%c", &n, &junk) == 1 &&
                (n == 0 || n == 1)) {
       FLAGS_use_lsm = n;
+    } else if (sscanf(argv[i], "--compression=%zd%c", &n, &junk) == 1) {
+      FLAGS_compression = n;
     } else if (sscanf(argv[i], "--use_existing_db=%zd%c", &n, &junk) == 1 &&
                (n == 0 || n == 1)) {
       FLAGS_use_existing_db = n;
