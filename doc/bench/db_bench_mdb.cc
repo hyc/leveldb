@@ -85,6 +85,9 @@ static int FLAGS_batch = 1000;
 // their original size after compression
 static double FLAGS_compression_ratio = 0.5;
 
+// Compression disabled by default
+static int FLAGS_compression = 0;
+
 // Print histogram of operation timings
 static bool FLAGS_histogram = false;
 
@@ -448,6 +451,14 @@ class Benchmark {
     fprintf(stdout,
             "WARNING: Assertions are enabled; benchmarks unnecessarily slow\n");
 #endif
+    // See if snappy is working by attempting to compress a compressible string
+    const char text[] = "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy";
+    std::string compressed;
+    if (!port::Snappy_Compress(text, sizeof(text), &compressed)) {
+      fprintf(stdout, "WARNING: Snappy compression is not enabled\n");
+    } else if (compressed.size() >= sizeof(text)) {
+      fprintf(stdout, "WARNING: Snappy compression is not effective\n");
+    }
   }
 
   void PrintEnvironment() {
@@ -781,6 +792,10 @@ class Benchmark {
 	if (write_order_ == RANDOM && shuff)
 	  thread->rand.Shuffle(shuff, num_);
 
+	char *buf;
+	if (FLAGS_compression)
+		buf = (char *)malloc(snappy::MaxCompressedLength(value_size_));
+
 	RandomGenerator gen;
 	MDB_val mkey, mval;
 	MDB_txn *txn;
@@ -815,8 +830,13 @@ class Benchmark {
 		  mkey.mv_size = snprintf(key, sizeof(key), "%016lx", k);
       bytes += value_size_ + mkey.mv_size;
 
-	  mval.mv_data = (void *)gen.Generate(value_size_).data();
-	  mval.mv_size = value_size_;
+	  if (FLAGS_compression) {
+		  snappy::RawCompress(gen.Generate(value_size_).data(), value_size_, buf, &mval.mv_size);
+		  mval.mv_data = buf;
+	  } else {
+		  mval.mv_data = (void *)gen.Generate(value_size_).data();
+		  mval.mv_size = value_size_;
+	  }
 	  rc = mdb_cursor_put(mc, &mkey, &mval, flag);
       if (rc) {
         fprintf(stderr, "set error: %s\n", mdb_strerror(rc));
@@ -829,6 +849,8 @@ class Benchmark {
 	  i += entries_per_batch_;
     }
 	thread->stats.AddBytes(bytes);
+	if (FLAGS_compression)
+		free(buf);
   }
 
   void ReadReverse(ThreadState *thread) {
@@ -836,17 +858,30 @@ class Benchmark {
 	MDB_cursor *cursor;
 	MDB_val key, data;
 	int64_t bytes = 0;
+	char *buf;
+
+	if (FLAGS_compression)
+		buf = (char *)malloc(value_size_);
 
 	mdb_txn_begin(db_, NULL, MDB_RDONLY, &txn);
 	mdb_cursor_open(txn, dbi_, &cursor);
     while (mdb_cursor_get(cursor, &key, &data, MDB_PREV) == 0) {
-	  *(volatile char *)data.mv_data;
+	  if (FLAGS_compression) {
+		size_t size;
+		snappy::GetUncompressedLength((const char *)data.mv_data, data.mv_size, &size);
+		snappy::RawUncompress((const char *)data.mv_data, data.mv_size, buf);
+		data.mv_size = size;
+	  } else {
+		  *(volatile char *)data.mv_data;
+	  }
       bytes += key.mv_size + data.mv_size;
       thread->stats.FinishedSingleOp();
     }
 	mdb_cursor_close(cursor);
 	mdb_txn_abort(txn);
 	thread->stats.AddBytes(bytes);
+	if (FLAGS_compression)
+		free(buf);
   }
 
   void ReadSequential(ThreadState *thread) {
@@ -854,17 +889,30 @@ class Benchmark {
 	MDB_cursor *cursor;
 	MDB_val key, data;
 	int64_t bytes = 0;
+	char *buf;
+
+	if (FLAGS_compression)
+		buf = (char *)malloc(value_size_);
 
 	mdb_txn_begin(db_, NULL, MDB_RDONLY, &txn);
 	mdb_cursor_open(txn, dbi_, &cursor);
     while (mdb_cursor_get(cursor, &key, &data, MDB_NEXT) == 0) {
-	  *(volatile char *)data.mv_data;
+	  if (FLAGS_compression) {
+		size_t size;
+		snappy::GetUncompressedLength((const char *)data.mv_data, data.mv_size, &size);
+		snappy::RawUncompress((const char *)data.mv_data, data.mv_size, buf);
+		data.mv_size = size;
+	  } else {
+	    *(volatile char *)data.mv_data;
+	  }
       bytes += key.mv_size + data.mv_size;
       thread->stats.FinishedSingleOp();
     }
 	mdb_cursor_close(cursor);
 	mdb_txn_abort(txn);
 	thread->stats.AddBytes(bytes);
+	if (FLAGS_compression)
+		free(buf);
   }
 
   void ReadRandom(ThreadState *thread) {
@@ -876,6 +924,10 @@ class Benchmark {
 	size_t found = 0;
     char ckey[100];
 	int ikey;
+	char *buf;
+
+	if (FLAGS_compression)
+		buf = (char *)malloc(value_size_);
 
 	if (FLAGS_intkey) {
 		key.mv_data = &ikey;
@@ -898,7 +950,13 @@ class Benchmark {
 	  mdb_cursor_renew(txn, cursor);
 	  read++;
 	  if (!mdb_cursor_get(cursor, &key, &data, MDB_SET)) {
-	    *(volatile char *)data.mv_data;
+		  if (FLAGS_compression) {
+			size_t size;
+			snappy::GetUncompressedLength((const char *)data.mv_data, data.mv_size, &size);
+			snappy::RawUncompress((const char *)data.mv_data, data.mv_size, buf);
+		  } else {
+			*(volatile char *)data.mv_data;
+		  }
 		found++;
 	  }
       thread->stats.FinishedSingleOp();
@@ -909,6 +967,8 @@ class Benchmark {
 	char msg[100];
 	snprintf(msg, sizeof(msg), "(%zd of %zd found)", found, read);
     thread->stats.AddMessage(msg);
+	if (FLAGS_compression)
+		free(buf);
   }
 
   void ReadWhileWriting(ThreadState* thread) {
@@ -925,6 +985,10 @@ class Benchmark {
 	double last = Env::Default()->NowMicros();
 	int writes_per_second_by_10 = 0;
 	int num_writes = 0;
+	char *buf;
+
+	if (FLAGS_compression)
+		buf = (char *)malloc(snappy::MaxCompressedLength(value_size_));
 
 	// --writes_per_second rate limit is enforced per 100 milliseconds
 	// intervals to avoid a burst of writes at the start of each second.
@@ -940,11 +1004,11 @@ class Benchmark {
 		if (thread->shared->num_done + 1 >= thread->shared->num_initialized) {
 		  // Other threads have finished
 		  // Report and wipe out our own stats
-		  char buf[100];
-		  snprintf(buf, sizeof(buf), "(desired %d ops/sec)",
+		  char msg[100];
+		  snprintf(msg, sizeof(msg), "(desired %d ops/sec)",
 			FLAGS_writes_per_second);
 		  thread->stats.Stop();
-		  thread->stats.AddMessage(buf);
+		  thread->stats.AddMessage(msg);
 		  thread->stats.Report(Slice("writer"));
 		  thread->stats.Start(thread->tid);
 		  break;
@@ -957,6 +1021,7 @@ class Benchmark {
 	  const unsigned long k = thread->rand.Next() % FLAGS_num;
 	  int rc, ikey;
 
+
 	  if (FLAGS_intkey) {
 		mkey.mv_data = &ikey;
 		mkey.mv_size = sizeof(ikey);
@@ -965,8 +1030,13 @@ class Benchmark {
 		mkey.mv_data = key;
 		mkey.mv_size = snprintf(key, sizeof(key), "%016lx", k);
 	  }
-	  mval.mv_data = (void *)gen.Generate(value_size_).data();
-	  mval.mv_size = value_size_;
+	  if (FLAGS_compression) {
+		  snappy::RawCompress(gen.Generate(value_size_).data(), value_size_, buf, &mval.mv_size);
+		  mval.mv_data = buf;
+	  } else {
+		  mval.mv_data = (void *)gen.Generate(value_size_).data();
+		  mval.mv_size = value_size_;
+	  }
 	  mdb_txn_begin(db_, NULL, 0, &txn);
 	  rc = mdb_put(txn, dbi_, &mkey, &mval, 0);
 	  if (rc) {
@@ -994,6 +1064,8 @@ class Benchmark {
 		}
       }
     }
+	if (FLAGS_compression)
+		free(buf);
   }
 };
 
@@ -1007,6 +1079,8 @@ int main(int argc, char** argv) {
     char junk;
     if (leveldb::Slice(argv[i]).starts_with("--benchmarks=")) {
       FLAGS_benchmarks = argv[i] + strlen("--benchmarks=");
+    } else if (sscanf(argv[i], "--compression=%zd%c", &n, &junk) == 1) {
+      FLAGS_compression = n;
     } else if (sscanf(argv[i], "--compression_ratio=%lf%c", &d, &junk) == 1) {
       FLAGS_compression_ratio = d;
     } else if (sscanf(argv[i], "--histogram=%zd%c", &n, &junk) == 1 &&
