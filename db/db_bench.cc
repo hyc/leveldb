@@ -95,6 +95,9 @@ static int FLAGS_value_size = 100;
 // their original size after compression
 static double FLAGS_compression_ratio = 0.5;
 
+// Compression disabled by default
+static int FLAGS_compression = 0;
+
 // Print histogram of operation timings
 static bool FLAGS_histogram = false;
 
@@ -827,6 +830,7 @@ class Benchmark {
     options.write_buffer_size = FLAGS_write_buffer_size;
     options.max_open_files = FLAGS_open_files;
     options.filter_policy = filter_policy_;
+	options.compression = FLAGS_compression != 0 ? kSnappyCompression : kNoCompression;
     Status s = DB::Open(options, FLAGS_db, &db_);
     if (!s.ok()) {
       fprintf(stderr, "open error: %s\n", s.ToString().c_str());
@@ -1119,6 +1123,8 @@ int main(int argc, char** argv) {
     char junk;
     if (leveldb::Slice(argv[i]).starts_with("--benchmarks=")) {
       FLAGS_benchmarks = argv[i] + strlen("--benchmarks=");
+    } else if (sscanf(argv[i], "--compression=%zd%c", &n, &junk) == 1) {
+      FLAGS_compression = n;
     } else if (sscanf(argv[i], "--compression_ratio=%lf%c", &d, &junk) == 1) {
       FLAGS_compression_ratio = d;
     } else if (sscanf(argv[i], "--histogram=%zd%c", &n, &junk) == 1 &&
