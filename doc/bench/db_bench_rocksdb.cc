@@ -95,6 +95,9 @@ static int FLAGS_value_size = 100;
 // their original size after compression
 static double FLAGS_compression_ratio = 0.5;
 
+// Compression disabled by default
+static int FLAGS_compression = 0;
+
 // Print histogram of operation timings
 static bool FLAGS_histogram = false;
 
@@ -823,6 +826,7 @@ class Benchmark {
     options.create_if_missing = !FLAGS_use_existing_db;
     options.write_buffer_size = FLAGS_write_buffer_size;
     options.max_open_files = FLAGS_open_files;
+	options.compression = (CompressionType)FLAGS_compression;
     BlockBasedTableOptions block_based_options;
 	block_based_options.block_cache = cache_;
 	block_based_options.block_size = FLAGS_block_size;
@@ -1099,6 +1103,8 @@ int main(int argc, char** argv) {
     char junk;
     if (rocksdb::Slice(argv[i]).starts_with("--benchmarks=")) {
       FLAGS_benchmarks = argv[i] + strlen("--benchmarks=");
+    } else if (sscanf(argv[i], "--compression=%zd%c", &n, &junk) == 1) {
+      FLAGS_compression = n;
     } else if (sscanf(argv[i], "--compression_ratio=%lf%c", &d, &junk) == 1) {
       FLAGS_compression_ratio = d;
     } else if (sscanf(argv[i], "--histogram=%zd%c", &n, &junk) == 1 &&
