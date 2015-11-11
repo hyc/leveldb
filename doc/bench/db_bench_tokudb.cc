@@ -849,7 +849,7 @@ class Benchmark {
     while (r != DB_NOTFOUND) {
       r = cursor->c_getf_prev(cursor, 0, &CursorAccumulate, thread);
     }
-    assert(r == 0);
+    assert(r == DB_NOTFOUND);
 	cursor->c_close(cursor);
 	txn->abort(txn);
   }
@@ -868,7 +868,7 @@ class Benchmark {
     while (r != DB_NOTFOUND) {
       r = cursor->c_getf_next(cursor, 0, &CursorAccumulate, thread);
     }
-    assert(r == 0);
+    assert(r == DB_NOTFOUND);
 	cursor->c_close(cursor);
 	txn->abort(txn);
   }
